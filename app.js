@@ -32,7 +32,8 @@ const DEFAULT_UNITS = [
 ];
 
 const DEFAULT_FINANCE = ["نفقة", "تأمين", "مجاني", "اقتصادي"];
-const listOf = (key) => S.settings?.[key] ?? (key === "financeTypes" ? DEFAULT_FINANCE : []);
+const listOf = (key) => key.split(".").reduce((o, k) => o?.[k], S.settings) ?? (key === "financeTypes" ? DEFAULT_FINANCE : []);
+const dayWord = (n) => (n === 1 ? "يوم" : n === 2 ? "يومين" : n <= 10 ? `${n} أيام` : `${n} يوم`);
 
 const S = {
   settings: undefined,   // undefined = لسه بيحمل، null = أول تشغيل
@@ -711,6 +712,7 @@ function openAdmissionDialog(unit, bed) {
           isNewborn: patient.isNewborn, nationalId: patient.nationalId || "",
           unitId: unit.id, bed, admitAt: Timestamp.fromDate(admitAt),
           consultant: f.consultant.value, specialties: checkedValues(f, "spec"), finance: f.finance.value,
+          financeHistory: [{ type: f.finance.value, from: isoDay(admitAt), byName: S.profile.displayName }],
           admissionNo: count, status: "active",
           createdBy: uid, createdByName: S.profile.displayName, createdAt: serverTimestamp(),
         });
@@ -978,6 +980,8 @@ function onPatientClick(ev) {
     case "discharge": openDischarge(); break;
     case "prevAdm": loadPrevAdmissions(); break;
     case "print": openPrintDialog(); break;
+    case "finChange": openFinanceChange(); break;
+    case "finDel": deleteFinance(b.dataset.from); break;
   }
 }
 
@@ -1007,10 +1011,7 @@ function ptInfo() {
         <dt>العنوان</dt><dd>${esc(p.address) || "—"}</dd>
         <dt>التليفون</dt><dd class="ltr">${esc(p.phone) || "—"}</dd>
       </dl>
-      <div class="visits ${visits > 1 ? "repeat" : ""}">
-        <span class="visits-icon" aria-hidden="true">${visits}</span>
-        <span>${visits > 1 ? `دخل الرعاية ${visits} مرات، وده الدخول رقم ${a.admissionNo || visits}` : "أول دخول للرعاية"}</span>
-      </div>
+      ${visitsHtml(a, p)}
     </section>
     <section class="panel">
       <header><h2>بيانات الدخول</h2>${canW ? `<button class="btn ghost sm" data-act="editAdm">تعديل</button>` : ""}</header>
@@ -1019,7 +1020,7 @@ function ptInfo() {
         <dt>أيام الإقامة</dt><dd>${stayDays(a)} يوم</dd>
         <dt>الوحدة</dt><dd>${esc(unit.name)}، ${esc(unit.bedLabel)} ${a.bed}</dd>
         <dt>استشاري الحالة</dt><dd>${esc(a.consultant) || "—"}</dd>
-        <dt>المعاملة المالية</dt><dd>${esc(a.finance) || "—"}</dd>
+        <dt>المعاملة المالية</dt><dd>${finInfoHtml(a, canW)}</dd>
         <dt>التخصصات المشتركة</dt><dd>${specs}</dd>
         <dt>سجّل الدخول</dt><dd>${esc(a.createdByName)}</dd>
       </dl>
@@ -1069,7 +1070,12 @@ function ptHistory() {
 function openHistory() {
   const cur = S.P.entries.filter((e) => e.kind === "history").sort(desc)[0];
   formDialog("التاريخ المرضي",
-    HISTORY_FIELDS.map(([k, l]) => `<label class="field"><span>${l}</span><textarea name="${k}" rows="${k === "hpi" ? 4 : 2}">${esc(cur?.[k] || "")}</textarea></label>`).join("")
+    HISTORY_FIELDS.map(([k, l]) => {
+      const opts = listOf(`historyOptions.${k}`);
+      return `<div class="field"><label for="h_${k}"><span>${l}</span></label>
+        <textarea id="h_${k}" name="${k}" rows="${k === "hpi" ? 4 : 2}" class="ltr-auto">${esc(cur?.[k] || "")}</textarea>
+        ${opts.length ? `<div class="opt-chips">${opts.map((o) => `<button type="button" class="opt" data-f="${k}" data-v="${esc(o)}">${esc(o)}</button>`).join("")}</div>` : ""}</div>`;
+    }).join("")
     + (cur ? `<p class="hint">الحفظ بيعمل نسخة جديدة، والنسخة الحالية بتفضل محفوظة في السجل.</p>` : ""),
     "حفظ التاريخ المرضي",
     async (f) => {
@@ -1079,6 +1085,21 @@ function openHistory() {
       await addDoc(subRef("entries"), { kind: "history", ...data, at: Timestamp.now(), ...meta() });
       toast("تم حفظ التاريخ المرضي");
     });
+  bindOptChips();
+}
+
+// الضغط على اختيار من القائمة بيضيفه للخانة، وتقدر تعدل عليه بعدها
+function appendTo(ta, v) {
+  const cur = ta.value.trim();
+  if (cur.split(/[\n،,]+/).map((x) => x.trim()).includes(v)) return;
+  ta.value = cur ? `${cur}، ${v}` : v;
+  ta.focus();
+}
+function bindOptChips() {
+  dlgBody.querySelectorAll(".opt").forEach((b) => (b.onclick = () => {
+    appendTo(dlgBody.querySelector(`textarea[name="${b.dataset.f}"]`), b.dataset.v);
+    b.classList.add("used");
+  }));
 }
 
 function openDx(e) {
@@ -1086,7 +1107,12 @@ function openDx(e) {
   formDialog(e ? "تعديل التشخيص" : "إضافة تشخيص", `
     <fieldset class="seg">${Object.entries(DX_TYPES).map(([k, l]) =>
       `<label><input type="radio" name="dxType" value="${k}" ${k === t ? "checked" : ""}> ${l}</label>`).join("")}</fieldset>
-    <label class="field"><span>التشخيص</span><textarea name="text" rows="3" class="ltr-auto">${esc(e?.text || "")}</textarea></label>
+    ${listOf("diagnoses").length ? `<label class="field"><span>اختر من قائمة التشخيصات</span>
+      <input name="dxPick" list="dlDx" class="ltr" placeholder="اكتب أول حروف التشخيص واختار" autocomplete="off"></label>
+      <datalist id="dlDx">${listOf("diagnoses").map((x) => `<option value="${esc(x)}">`).join("")}</datalist>` : ""}
+    <label class="field"><span>التشخيص</span><textarea name="text" rows="3" class="ltr-auto">${esc(e?.text || "")}</textarea>
+      <span class="hint">الاختيار من القائمة بيتكتب هنا، وتقدر تعدل عليه.</span></label>
+    ${isAdmin() ? `<div class="checks"><label><input type="checkbox" name="saveRef"> أضف التشخيص ده لقائمة التشخيصات</label></div>` : ""}
     ${timeInput("at", "الوقت", e?.at || new Date())}`,
     e ? "حفظ التعديل" : "إضافة التشخيص",
     async (f) => {
@@ -1096,9 +1122,18 @@ function openDx(e) {
       const data = { kind: "diagnosis", dxType: f.querySelector('input[name="dxType"]:checked').value, text, at: Timestamp.fromDate(at) };
       if (e) await pUpd(subRef("entries", e.id), { ...data, ...upMeta() });
       else await addDoc(subRef("entries"), { ...data, ...meta() });
+      if (f.elements.saveRef?.checked && !listOf("diagnoses").includes(text))
+        await updateDoc(doc(db, "config", "settings"), { diagnoses: [...listOf("diagnoses"), text] });
       toast(e ? "تم حفظ التعديل" : "تمت إضافة التشخيص");
     },
     e ? () => pDel(subRef("entries", e.id)) : null);
+  const pick = document.querySelector('#gForm input[name="dxPick"]');
+  if (pick) pick.onchange = () => {
+    const v = pick.value.trim();
+    if (!listOf("diagnoses").includes(v)) return;
+    appendTo(document.querySelector('#gForm textarea[name="text"]'), v);
+    pick.value = "";
+  };
 }
 
 /* ---------- الإشراف المشترك ---------- */
@@ -1491,10 +1526,8 @@ function openEditAdmission(a) {
     <label class="field"><span>تاريخ ووقت الدخول</span>
       <input name="admitAt" type="datetime-local" value="${toLocalInput(toDate(a.admitAt))}" max="${toLocalInput(new Date())}" ${admin ? "" : "disabled"}>
       ${admin ? "" : `<span class="hint">تعديل تاريخ الدخول للأدمن فقط.</span>`}</label>
-    <div class="row2">
-      <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], a.consultant)}</select></label>
-      <label class="field"><span>المعاملة المالية</span><select name="finance">${optionsHtml(listOf("financeTypes"), a.finance || "")}</select></label>
-    </div>
+    <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], a.consultant)}</select></label>
+    <p class="hint">المعاملة المالية بتتغير من زر "تغيير" جنبها في بيانات الدخول، عشان تتسجل بالتاريخ.</p>
     <div class="field"><span>التخصصات المشتركة</span>${checksHtml("spec", [...new Set([...(s.specialties || []), ...(a.specialties || [])])], a.specialties || [])}</div>
     <div class="err" id="aeErr"></div>
     <div class="actions"><button class="btn">حفظ التعديل</button><button type="button" class="btn ghost" data-close>إلغاء</button></div>
@@ -1504,8 +1537,7 @@ function openEditAdmission(a) {
     ev.preventDefault();
     const err = document.getElementById("aeErr");
     if (!f.consultant.value) { err.textContent = "اختر استشاري الحالة."; return; }
-    if (!f.finance.value) { err.textContent = "اختر المعاملة المالية."; return; }
-    const upd = { consultant: f.consultant.value, finance: f.finance.value, specialties: checkedValues(f, "spec"),
+    const upd = { consultant: f.consultant.value, specialties: checkedValues(f, "spec"),
       updatedAt: serverTimestamp(), updatedBy: S.profile.uid };
     if (admin) {
       const d = new Date(f.admitAt.value);
@@ -1514,7 +1546,7 @@ function openEditAdmission(a) {
     }
     try {
       await updateDoc(doc(db, "admissions", a.id), upd);
-      audit("تعديل بيانات الدخول", { adm: a, before: { consultant: a.consultant || "", finance: a.finance || "",
+      audit("تعديل بيانات الدخول", { adm: a, before: { consultant: a.consultant || "",
         specialties: a.specialties || [], admitAt: a.admitAt } });
       closeDialog(); toast("تم حفظ التعديل");
     }
@@ -1526,11 +1558,11 @@ function openEditAdmission(a) {
    الإعدادات (أدمن)
    ========================================================= */
 function renderSettings(tab) {
-  const tabs = [["users", "المستخدمين"], ["units", "الوحدات والأسرّة"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["hospital", "بيانات المستشفى"], ["audit", "سجل التعديلات"]];
+  const tabs = [["users", "المستخدمين"], ["units", "الوحدات والأسرّة"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["clinical", "قوائم التشخيص والتاريخ"], ["hospital", "بيانات المستشفى"], ["audit", "سجل التعديلات"]];
   const nav = `<nav class="tabs">${tabs.map(([k, t]) => `<a href="#/settings/${k}" class="${tab === k ? "on" : ""}">${t}</a>`).join("")}</nav>`;
   shell(nav + `<div id="tabBody"><div class="loading">جاري التحميل…</div></div>`);
   const body = document.getElementById("tabBody");
-  ({ users: tabUsers, units: tabUnits, vitals: tabVitalFields, lists: tabLists, hospital: tabHospital, audit: tabAudit }[tab] || tabUsers)(body);
+  ({ users: tabUsers, units: tabUnits, vitals: tabVitalFields, lists: tabLists, clinical: tabClinicalLists, hospital: tabHospital, audit: tabAudit }[tab] || tabUsers)(body);
 }
 
 /* ---------- المستخدمين ---------- */
@@ -1730,6 +1762,16 @@ function tabVitalFields(body, unitId) {
 
 /* ---------- القوائم ---------- */
 function tabLists(body) {
+  listsEditor(body, [["financeTypes", "المعاملة المالية", "مثال: تعاقد شركة"], ["consultants", "الاستشاريين", "مثال: د. أحمد محمود"],
+    ["specialties", "التخصصات المشتركة", "مثال: باطنة"], ["investigations", "التحاليل والأشعة الشائعة", "مثال: CBC"],
+    ["drugs", "الأدوية الشائعة", "مثال: Ceftriaxone"]], tabLists);
+}
+const HIST_OPT_FIELDS = ["complaint", "pmh", "psh", "drugs", "allergy"];
+function tabClinicalLists(body) {
+  listsEditor(body, [["diagnoses", "التشخيصات", "مثال: Acute MI"],
+    ...HIST_OPT_FIELDS.map((k) => [`historyOptions.${k}`, `التاريخ المرضي: ${HISTORY_FIELDS.find(([x]) => x === k)[1]}`, "اكتب واضغط إضافة"])], tabClinicalLists);
+}
+function listsEditor(body, blocks, redraw) {
   const block = (key, title, ph) => `
     <div class="settings-block">
       <div class="toolbar"><h2>${title}</h2></div>
@@ -1740,13 +1782,9 @@ function tabLists(body) {
           || `<span class="muted" style="border:0;background:none">القائمة فاضية</span>`}</div>
       </div>
     </div>`;
-  body.innerHTML = block("financeTypes", "المعاملة المالية", "مثال: تعاقد شركة")
-    + block("consultants", "الاستشاريين", "مثال: د. أحمد محمود")
-    + block("specialties", "التخصصات المشتركة", "مثال: باطنة")
-    + block("investigations", "التحاليل والأشعة الشائعة", "مثال: CBC")
-    + block("drugs", "الأدوية الشائعة", "مثال: Ceftriaxone");
+  body.innerHTML = blocks.map(([k, t, ph]) => block(k, t, ph)).join("");
   const save = async (key, arr) => {
-    try { await updateDoc(doc(db, "config", "settings"), { [key]: arr }); tabLists(body); }
+    try { await updateDoc(doc(db, "config", "settings"), { [key]: arr }); redraw(body); }
     catch (e) { toast(errText(e), true); }
   };
   body.querySelectorAll("form.add").forEach((f) => (f.onsubmit = (ev) => {
@@ -1830,6 +1868,26 @@ function stayDays(a) {
   return Math.round((e0 - s0) / 86400000) + 1;
 }
 const unitName = (id) => unitById(id)?.name || id;
+
+// المعاملة المالية بالتاريخ: [{type, from}] وكل يوم إقامة بياخد المعاملة السارية فيه
+function finHist(a) {
+  if (a.financeHistory?.length) return [...a.financeHistory].sort((x, y) => x.from.localeCompare(y.from));
+  return a.finance ? [{ type: a.finance, from: isoDay(toDate(a.admitAt)) }] : [];
+}
+function finOn(a, day) {
+  const h = finHist(a);
+  return (h.filter((x) => x.from <= day).pop() || h[0])?.type || "غير محدد";
+}
+function finBreakdown(a, fromDay, toDay) {
+  let s0 = isoDay(toDate(a.admitAt)), e0 = isoDay(stayEnd(a));
+  if (fromDay && fromDay > s0) s0 = fromDay;
+  if (toDay && toDay < e0) e0 = toDay;
+  const out = {};
+  if (s0 > e0) return out;
+  dayRange(s0, e0).forEach((d) => { const t = finOn(a, d); out[t] = (out[t] || 0) + 1; });
+  return out;
+}
+const finText = (b) => Object.entries(b).map(([k, n]) => `${k} ${n === 1 ? "يوم" : n === 2 ? "يومين" : n <= 10 ? n + " أيام" : n + " يوم"}`).join("، ") || "—";
 const bedName = (unitId, bed) => `${unitById(unitId)?.bedLabel || "سرير"} ${bed}`;
 
 /* ---------- سجل التعديلات ---------- */
@@ -1874,6 +1932,7 @@ function ptInfoExtra() {
         <dt>نوع الخروج</dt><dd><strong>${DIS_TYPES[a.dischargeType] || ""}</strong></dd>
         <dt>${a.dischargeType === "death" ? "وقت الوفاة" : "وقت الخروج"}</dt><dd>${fmtDateTime(a.dischargeAt)}</dd>
         <dt>أيام الإقامة</dt><dd>${stayDays(a)} يوم</dd>
+        <dt>المعاملة المالية</dt><dd>${esc(finText(finBreakdown(a)))}</dd>
         ${i.deathCause ? `<dt>سبب الوفاة</dt><dd>${pre(i.deathCause)}</dd>` : ""}
         ${i.ward ? `<dt>القسم الداخلي</dt><dd>${esc(i.ward)}</dd>` : ""}
         ${i.hospital ? `<dt>المستشفى</dt><dd>${esc(i.hospital)}</dd>` : ""}
@@ -1894,28 +1953,86 @@ function ptInfoExtra() {
           ${m.reason ? `<p>${esc(m.reason)}</p>` : ""}</li>`).join("")}</ul>
     </section>`;
   }
-  if (isAdmin() && (P.pat.admissionsCount || 1) > 1) {
-    const list = P.prev;
-    html += `
-    <section class="panel">
-      <header><h2>الدخولات السابقة</h2>${list ? "" : `<button class="btn ghost sm" data-act="prevAdm">عرض</button>`}</header>
-      ${list ? (list.length ? `<ul class="entries">${list.map((x) => `
-        <li><div class="entry-head"><a href="#/patient/${x.id}"><strong>${fmtDate(x.admitAt)}</strong></a>
-          <span>${esc(unitName(x.unitId))}</span>
-          <span class="pill">${x.status === "active" ? "حالياً" : DIS_TYPES[x.dischargeType] || ""}</span>
-          <span class="by-line">${stayDays(x)} يوم</span></div></li>`).join("")}</ul>` : `<p class="muted">لا يوجد.</p>`) : ""}
-    </section>`;
-  }
   return html ? `<div class="stack">${html}</div>` : "";
 }
 
 async function loadPrevAdmissions() {
   const P = S.P;
   try {
-    const snap = await getDocs(query(collection(db, "admissions"), where("patientId", "==", P.adm.patientId)));
-    P.prev = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => x.id !== P.adm.id)
-      .sort((x, y) => toDate(y.admitAt) - toDate(x.admitAt));
-    drawPatient();
+    const qs = [getDocs(query(collection(db, "admissions"), where("patientId", "==", P.adm.patientId)))];
+    if (P.adm.nationalId) qs.push(getDocs(query(collection(db, "admissions"), where("nationalId", "==", P.adm.nationalId))));
+    const found = new Map();
+    (await Promise.all(qs)).forEach((snap) => snap.docs.forEach((d) => found.set(d.id, { id: d.id, ...d.data() })));
+    P.prev = [...found.values()].filter((x) => x.id !== P.adm.id).sort((x, y) => toDate(y.admitAt) - toDate(x.admitAt));
+  } catch (e) { P.prev = []; P.prevErr = errText(e); }
+  if (S.P === P) drawPatient();
+}
+
+function visitsHtml(a, p) {
+  const P = S.P;
+  if (!isAdmin()) {
+    const v = p.admissionsCount || 1;
+    return `<div class="visits ${v > 1 ? "repeat" : ""}"><span class="visits-icon" aria-hidden="true">${v}</span>
+      <span>${v > 1 ? `دخل الرعاية ${v} مرات، وده الدخول رقم ${a.admissionNo || v}` : "أول دخول للرعاية"}</span></div>`;
+  }
+  if (P.prev === undefined && !P.prevLoading) { P.prevLoading = true; loadPrevAdmissions(); }
+  const list = P.prev || [];
+  const v = Math.max(p.admissionsCount || 1, list.length + 1);
+  return `<div class="visits ${v > 1 ? "repeat" : ""}"><span class="visits-icon" aria-hidden="true">${v}</span>
+      <span>${v > 1 ? `دخل الرعاية ${v} مرات` : "أول دخول للرعاية"}</span></div>
+    ${P.prev === undefined ? `<p class="by-line">جاري تحميل الدخولات السابقة…</p>` : ""}
+    ${P.prevErr ? `<p class="err">${esc(P.prevErr)}</p>` : ""}
+    ${list.length ? `<ul class="prev-list">${list.map((x) => `
+      <li><a href="#/patient/${x.id}">
+        <strong>${fmtDate(x.admitAt)}</strong>
+        <span>${esc(unitName(x.unitId))}</span>
+        <span class="dis t-${x.status === "active" ? "improved" : x.dischargeType}">${x.status === "active" ? "موجود حالياً" : DIS_TYPES[x.dischargeType] || "خرج"}</span>
+        <span class="by-line">${stayDays(x)} يوم</span>
+      </a></li>`).join("")}</ul>` : ""}`;
+}
+
+function finInfoHtml(a, canW) {
+  const h = finHist(a);
+  if (!h.length) return `— ${canW ? `<button class="linkbtn" data-act="finChange">تحديد</button>` : ""}`;
+  const b = finBreakdown(a);
+  return `<strong>${esc(h[h.length - 1].type)}</strong>
+    ${canW ? `<button class="linkbtn" data-act="finChange">تغيير</button>` : ""}
+    <div class="fin-days">${esc(finText(b))}</div>
+    ${h.length > 1 ? `<ul class="fin-tl">${h.map((x, i) => `<li>من ${fmtDate(x.from)}: ${esc(x.type)}
+      ${isAdmin() && i > 0 ? `<button class="linkbtn del" data-act="finDel" data-from="${x.from}" aria-label="حذف">حذف</button>` : ""}</li>`).join("")}</ul>` : ""}`;
+}
+
+function openFinanceChange() {
+  const a = S.P.adm;
+  const admitDay = isoDay(toDate(a.admitAt));
+  const cur = finHist(a).pop()?.type || "";
+  formDialog("تغيير المعاملة المالية", `
+    <label class="field"><span>المعاملة الجديدة</span><select name="ftype">${optionsHtml(listOf("financeTypes"), cur)}</select></label>
+    ${dateInput("from", "تبدأ من يوم", isoDay(new Date()), admitDay)}
+    <p class="hint">الأيام اللي قبل التاريخ ده بتفضل على المعاملة القديمة، وتقرير الخروج بيحسب عدد أيام كل معاملة.</p>`,
+    "حفظ المعاملة",
+    async (f) => {
+      const type = f.elements.ftype.value;
+      if (!type) return "اختر المعاملة المالية.";
+      const [from, er] = readDate(f.elements.from, admitDay); if (er) return er;
+      if (a.status === "discharged" && from > isoDay(stayEnd(a))) return "التاريخ بعد يوم الخروج.";
+      const hist = finHist(a).filter((x) => x.from !== from);
+      hist.push({ type, from, byName: S.profile.displayName });
+      hist.sort((x, y) => x.from.localeCompare(y.from));
+      await updateDoc(doc(db, "admissions", a.id), { financeHistory: hist, finance: hist[hist.length - 1].type, ...upMeta() });
+      audit(`تغيير المعاملة المالية إلى ${type}`, { adm: a, details: { from }, before: { financeHistory: finHist(a) } });
+      toast("تم حفظ المعاملة المالية");
+    });
+}
+
+async function deleteFinance(from) {
+  const a = S.P.adm;
+  if (!confirm(`حذف تغيير المعاملة المالية من يوم ${fmtDate(from)}؟`)) return;
+  const hist = finHist(a).filter((x) => x.from !== from);
+  try {
+    await updateDoc(doc(db, "admissions", a.id), { financeHistory: hist, finance: hist[hist.length - 1].type, ...upMeta() });
+    audit("حذف تغيير المعاملة المالية", { adm: a, before: { financeHistory: finHist(a) } });
+    toast("تم الحذف");
   } catch (e) { toast(errText(e), true); }
 }
 
@@ -2097,7 +2214,7 @@ async function loadArchive() {
         <td>${fmtDateTime(r.dischargeAt)}</td>
         <td>${stayDays(r)} يوم</td>
         <td><span class="dis t-${r.dischargeType}">${DIS_TYPES[r.dischargeType] || ""}</span></td>
-        <td>${esc(r.finance) || "—"}</td></tr>`).join("")}</tbody>
+        <td>${esc(finText(finBreakdown(r)))}</td></tr>`).join("")}</tbody>
     </table></div>`;
 }
 
@@ -2249,7 +2366,7 @@ function buildPatientPrint(sel, rangeDays) {
       <dl class="kv">
         <dt>تاريخ الدخول</dt><dd>${fmtDateTime(a.admitAt)}</dd>
         <dt>استشاري الحالة</dt><dd>${esc(a.consultant) || "—"}</dd>
-        <dt>المعاملة المالية</dt><dd>${esc(a.finance) || "—"}</dd>
+        <dt>المعاملة المالية</dt><dd>${esc(finText(finBreakdown(a)))}</dd>
         <dt>التخصصات المشتركة</dt><dd>${esc((a.specialties || []).join("، ")) || "—"}</dd>
         ${a.status === "discharged" ? `<dt>الخروج</dt><dd>${DIS_TYPES[a.dischargeType] || ""}، ${fmtDateTime(a.dischargeAt)}</dd>
           ${i.deathCause ? `<dt>سبب الوفاة</dt><dd>${esc(i.deathCause)}</dd>` : ""}
@@ -2395,11 +2512,9 @@ async function loadStats() {
       const ov = Math.min(s.to, effEnd) - Math.max(s.from, start);
       if (ov > 0) (U[s.unit] ||= blank()).hours += ov / 36e5;
     }
-    if (inRange(toDate(a.admitAt))) {
-      (U[segs[0].unit] ||= blank()).adm++;
-      const k = a.finance || "غير محدد";
-      fin[k] = (fin[k] || 0) + 1;
-    }
+    if (inRange(toDate(a.admitAt))) (U[segs[0].unit] ||= blank()).adm++;
+    const fb = finBreakdown(a, T.from, isoDay(effEnd));
+    Object.entries(fb).forEach(([k, n]) => (fin[k] = (fin[k] || 0) + n));
     if (a.status === "discharged" && inRange(toDate(a.dischargeAt))) {
       const x = (U[a.unitId] ||= blank());
       x.dis++; x.types[a.dischargeType] = (x.types[a.dischargeType] || 0) + 1; x.los += stayDays(a);
@@ -2433,10 +2548,10 @@ async function loadStats() {
       <th>نسبة الوفيات</th><th>متوسط الإقامة</th><th>أيام المرضى</th><th>نسبة الإشغال</th></tr></thead>
     <tbody>${rows}${row("الإجمالي", tot, totBeds).replace("<tr>", '<tr class="total">')}</tbody>
   </table></div>
-  <h3 class="st-h">المعاملة المالية (حالات الدخول في الفترة)</h3>
+  <h3 class="st-h">أيام المرضى حسب المعاملة المالية</h3>
   ${finTotal ? `<div class="fin">${Object.entries(fin).sort((x, y) => y[1] - x[1]).map(([k, n]) =>
-    `<div class="fin-item"><strong>${n}</strong><span>${esc(k)}</span><small>${pct(n, finTotal)}</small></div>`).join("")}</div>`
-    : `<p class="muted">لا يوجد دخول في الفترة دي.</p>`}
+    `<div class="fin-item"><strong>${n}</strong><span>${esc(k)}</span><small>${pct(n, finTotal)} من أيام المرضى</small></div>`).join("")}</div>`
+    : `<p class="muted">لا يوجد مرضى في الفترة دي.</p>`}
   <p class="muted st-note">نسبة الوفيات = الوفيات ÷ حالات الخروج في الفترة. متوسط الإقامة لحالات الخروج فقط.
   أيام المرضى ونسبة الإشغال بتتحسب بالساعات لكل وحدة حسب سجل النقل، ونسبة الإشغال = أيام المرضى ÷ (عدد الأسرّة × أيام الفترة).
   الدخول بيتحسب على أول وحدة دخلها المريض، والخروج على آخر وحدة.</p>`;
