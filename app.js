@@ -6,7 +6,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where,
-  onSnapshot, runTransaction, writeBatch, serverTimestamp, Timestamp, addDoc, deleteDoc
+  onSnapshot, runTransaction, writeBatch, serverTimestamp, Timestamp, addDoc, deleteDoc,
+  orderBy, limit, arrayUnion
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, USER_EMAIL_DOMAIN } from "./firebase-config.js";
 
@@ -144,6 +145,7 @@ function errText(e) {
     "auth/network-request-failed": "لا يوجد اتصال بالإنترنت.",
     "unavailable": "لا يوجد اتصال بالخادم. تأكد من الإنترنت.",
     BED_TAKEN: "السرير ده اتشغل حالاً من مستخدم آخر. اختر سريراً فارغاً.",
+    ALREADY_OUT: "الحالة دي خرجت بالفعل.",
     PATIENT_ADMITTED: "المريض ده مسجل دخول حالياً في الرعاية، ولازم يخرج الأول.",
   };
   for (const k in map) if (code.includes(k)) return map[k];
@@ -278,6 +280,9 @@ function route() {
   } else if (page === "patient" && parts[1]) {
     S.page = "patient";
     renderPatient(parts[1]);
+  } else if (page === "archive" && isAdmin()) {
+    S.page = "archive";
+    renderArchive();
   } else if (page === "settings" && isAdmin()) {
     S.page = "settings";
     renderSettings(parts[1] || "users");
@@ -296,7 +301,8 @@ function shell(inner) {
     </a>
     <nav class="nav">
       <a href="#/" class="${S.page === "dashboard" ? "on" : ""}">الأسرّة</a>
-      ${isAdmin() ? `<a href="#/settings" class="${S.page === "settings" ? "on" : ""}">الإعدادات</a>` : ""}
+      ${isAdmin() ? `<a href="#/archive" class="${S.page === "archive" ? "on" : ""}">الأرشيف</a>
+      <a href="#/settings" class="${S.page === "settings" ? "on" : ""}">الإعدادات</a>` : ""}
     </nav>
     <div class="me">
       <span>${esc(p.displayName)}</span>
@@ -706,6 +712,7 @@ function openAdmissionDialog(unit, bed) {
         });
       });
       closeDialog();
+      audit("دخول حالة", { adm: { id: admRef.id, patientName: patient.name, unitId: unit.id } });
       toast("تم تسجيل الدخول");
       location.hash = `#/patient/${admRef.id}`;
     } catch (e) {
@@ -913,9 +920,12 @@ function drawPatient() {
     <h1>${esc(p.name || a.patientName)}</h1>
     <div class="tags">
       <span class="tag">${esc(unit.bedLabel)} ${a.bed}</span>
-      ${active ? `<span class="tag day">اليوم ${dayOfStay(a.admitAt)} للإقامة</span>` : `<span class="tag archived">في الأرشيف</span>`}
+      ${active ? `<span class="tag day">اليوم ${stayDays(a)} للإقامة</span>` : `<span class="tag archived">في الأرشيف: ${DIS_TYPES[a.dischargeType] || "خرج"}</span>`}
       ${a.consultant ? `<span class="tag">${esc(a.consultant)}</span>` : ""}
     </div>
+    ${active && canWriteUnit(a.unitId) ? `<div class="file-actions">
+      <button class="btn ghost" data-act="transfer">نقل</button>
+      <button class="btn danger" data-act="discharge">خروج</button></div>` : ""}
   </div>
   <nav class="ptabs" role="tablist">${PTABS.map(([k, t]) =>
     `<button role="tab" aria-selected="${P.tab === k}" data-act="tab" data-tab="${k}" class="${P.tab === k ? "on" : ""}">${t}${badge[k] ? `<b>${badge[k]}</b>` : ""}</button>`).join("")}</nav>
@@ -959,6 +969,9 @@ function onPatientClick(ev) {
     case "mStop": openMedStop(med()); break;
     case "mResume": resumeMed(med()); break;
     case "mDel": deleteMed(med()); break;
+    case "transfer": openTransfer(); break;
+    case "discharge": openDischarge(); break;
+    case "prevAdm": loadPrevAdmissions(); break;
   }
 }
 
@@ -997,7 +1010,7 @@ function ptInfo() {
       <header><h2>بيانات الدخول</h2>${canW ? `<button class="btn ghost sm" data-act="editAdm">تعديل</button>` : ""}</header>
       <dl class="kv">
         <dt>تاريخ الدخول</dt><dd>${fmtDateTime(a.admitAt)}</dd>
-        <dt>أيام الإقامة</dt><dd>${dayOfStay(a.admitAt)} يوم</dd>
+        <dt>أيام الإقامة</dt><dd>${stayDays(a)} يوم</dd>
         <dt>الوحدة</dt><dd>${esc(unit.name)}، ${esc(unit.bedLabel)} ${a.bed}</dd>
         <dt>استشاري الحالة</dt><dd>${esc(a.consultant) || "—"}</dd>
         <dt>المعاملة المالية</dt><dd>${esc(a.finance) || "—"}</dd>
@@ -1005,7 +1018,7 @@ function ptInfo() {
         <dt>سجّل الدخول</dt><dd>${esc(a.createdByName)}</dd>
       </dl>
     </section>
-  </div>`;
+  </div>${ptInfoExtra()}`;
 }
 
 /* ---------- التاريخ المرضي والتشخيص ---------- */
@@ -1075,11 +1088,11 @@ function openDx(e) {
       if (!text) return "اكتب التشخيص.";
       const [at, er] = readTime(f.elements.at); if (er) return er;
       const data = { kind: "diagnosis", dxType: f.querySelector('input[name="dxType"]:checked').value, text, at: Timestamp.fromDate(at) };
-      if (e) await updateDoc(subRef("entries", e.id), { ...data, ...upMeta() });
+      if (e) await pUpd(subRef("entries", e.id), { ...data, ...upMeta() });
       else await addDoc(subRef("entries"), { ...data, ...meta() });
       toast(e ? "تم حفظ التعديل" : "تمت إضافة التشخيص");
     },
-    e ? () => deleteDoc(subRef("entries", e.id)) : null);
+    e ? () => pDel(subRef("entries", e.id)) : null);
 }
 
 /* ---------- الإشراف المشترك ---------- */
@@ -1115,11 +1128,11 @@ function openConsult(e) {
       if (!opinion) return "اكتب الرأي.";
       const [at, er] = readTime(f.elements.at); if (er) return er;
       const data = { kind: "consult", specialty, doctor: f.elements.doctor.value.trim(), opinion, at: Timestamp.fromDate(at) };
-      if (e) await updateDoc(subRef("entries", e.id), { ...data, ...upMeta() });
+      if (e) await pUpd(subRef("entries", e.id), { ...data, ...upMeta() });
       else await addDoc(subRef("entries"), { ...data, ...meta() });
       toast(e ? "تم حفظ التعديل" : "تمت إضافة الرأي");
     },
-    e ? () => deleteDoc(subRef("entries", e.id)) : null);
+    e ? () => pDel(subRef("entries", e.id)) : null);
 }
 
 /* ---------- الأشعة والتحاليل ---------- */
@@ -1182,11 +1195,11 @@ function openInvEdit(e) {
       const name = f.elements.invName.value.trim();
       if (!name) return "اكتب اسم الطلب.";
       const [at, er] = readTime(f.elements.at); if (er) return er;
-      await updateDoc(subRef("entries", e.id), { name, invType: f.querySelector('input[name="invType"]:checked').value,
+      await pUpd(subRef("entries", e.id), { name, invType: f.querySelector('input[name="invType"]:checked').value,
         at: Timestamp.fromDate(at), ...upMeta() });
       toast("تم حفظ التعديل");
     },
-    () => deleteDoc(subRef("entries", e.id)));
+    () => pDel(subRef("entries", e.id)));
 }
 
 function openInvResult(e) {
@@ -1198,7 +1211,7 @@ function openInvResult(e) {
       const result = f.elements.result.value.trim();
       if (!result) return "اكتب النتيجة.";
       const [at, er] = readTime(f.elements.resultAt); if (er) return er;
-      await updateDoc(subRef("entries", e.id), { result, resultAt: Timestamp.fromDate(at),
+      await pUpd(subRef("entries", e.id), { result, resultAt: Timestamp.fromDate(at),
         resultBy: S.profile.uid, resultByName: S.profile.displayName });
       toast("تم حفظ النتيجة");
     });
@@ -1251,11 +1264,11 @@ function openVitals(r) {
       const note = f.elements.note.value.trim();
       if (!Object.keys(values).length && !note) return "سجّل علامة واحدة على الأقل أو تطور الحالة.";
       const [at, er] = readTime(f.elements.at); if (er) return er;
-      if (r) await updateDoc(subRef("vitals", r.id), { values: { ...Object.fromEntries(Object.entries(r.values || {}).filter(([k]) => !fields.some((f) => f.key === k))), ...values }, note, at: Timestamp.fromDate(at), ...upMeta() });
+      if (r) await pUpd(subRef("vitals", r.id), { values: { ...Object.fromEntries(Object.entries(r.values || {}).filter(([k]) => !fields.some((f) => f.key === k))), ...values }, note, at: Timestamp.fromDate(at), ...upMeta() });
       else await addDoc(subRef("vitals"), { values, note, at: Timestamp.fromDate(at), ...meta() });
       toast(r ? "تم حفظ التعديل" : "تم حفظ القراءة");
     },
-    r ? () => deleteDoc(subRef("vitals", r.id)) : null);
+    r ? () => pDel(subRef("vitals", r.id)) : null);
 }
 
 /* ---------- العلاج ---------- */
@@ -1274,7 +1287,7 @@ function ptMeds() {
   const head = `<div class="toolbar"><h2>العلاج اليومي</h2>${add ? `<button class="btn" data-act="mAdd">إضافة علاج</button>` : ""}</div>`;
   if (!P.meds.length) return head + `<div class="empty">لا يوجد علاج مسجل. العلاج بيفضل مستمر كل يوم لحد ما يتوقف.</div>`;
 
-  const days = dayRange(isoDay(toDate(a.admitAt)), isoDay(new Date()));
+  const days = dayRange(isoDay(toDate(a.admitAt)), isoDay(stayEnd(a)));
   const off = (m) => (m.stopDate || medEnded(m) ? 1 : 0);
   const meds = [...P.meds].sort((x, y) => off(x) - off(y) || x.startDate.localeCompare(y.startDate));
   const cell = (m, day) => {
@@ -1391,7 +1404,7 @@ function openMedChange(m) {
         doses.push({ dose, frequency, from, byName: S.profile.displayName });
         upd.doses = doses;
       }
-      await updateDoc(subRef("meds", m.id), upd);
+      await pUpd(subRef("meds", m.id), upd);
       toast("تم الحفظ");
     });
 }
@@ -1404,7 +1417,7 @@ function openMedStop(m) {
     "إيقاف العلاج",
     async (f) => {
       const [d, er] = readDate(f.elements.stopDate, m.startDate); if (er) return er;
-      await updateDoc(subRef("meds", m.id), { stopDate: d, stopReason: f.elements.reason.value.trim(),
+      await pUpd(subRef("meds", m.id), { stopDate: d, stopReason: f.elements.reason.value.trim(),
         stoppedByName: S.profile.displayName, at: Timestamp.now(), ...upMeta() });
       toast("تم إيقاف العلاج");
     });
@@ -1413,14 +1426,14 @@ function openMedStop(m) {
 async function resumeMed(m) {
   if (!confirm(`إلغاء إيقاف ${m.name}؟ العلاج هيرجع مستمر.`)) return;
   try {
-    await updateDoc(subRef("meds", m.id), { stopDate: null, stopReason: "", at: Timestamp.now(), ...upMeta() });
+    await pUpd(subRef("meds", m.id), { stopDate: null, stopReason: "", at: Timestamp.now(), ...upMeta() });
     toast("تم إلغاء الإيقاف");
   } catch (e) { toast(errText(e), true); }
 }
 
 async function deleteMed(m) {
   if (!confirm(`حذف ${m.name} نهائياً من جدول العلاج؟ استخدم الحذف للأخطاء فقط، وللإيقاف استخدم "إيقاف".`)) return;
-  try { await deleteDoc(subRef("meds", m.id)); toast("تم الحذف"); } catch (e) { toast(errText(e), true); }
+  try { await pDel(subRef("meds", m.id)); toast("تم الحذف"); } catch (e) { toast(errText(e), true); }
 }
 
 /* ---------- تعديل البيانات الأساسية وبيانات الدخول ---------- */
@@ -1457,6 +1470,7 @@ function openEditBasic(a, p) {
       b.update(doc(db, "patients", a.patientId), upd);
       b.update(doc(db, "admissions", a.id), { patientName: upd.name });
       await b.commit();
+      audit("تعديل البيانات الأساسية", { adm: a, before: { name: p.name, address: p.address || "", phone: p.phone || "" } });
       closeDialog(); toast("تم حفظ التعديل");
     } catch (e) { err.textContent = errText(e); }
   };
@@ -1492,7 +1506,12 @@ function openEditAdmission(a) {
       if (isNaN(d) || d > new Date()) { err.textContent = "تاريخ الدخول غير صحيح."; return; }
       upd.admitAt = Timestamp.fromDate(d);
     }
-    try { await updateDoc(doc(db, "admissions", a.id), upd); closeDialog(); toast("تم حفظ التعديل"); }
+    try {
+      await updateDoc(doc(db, "admissions", a.id), upd);
+      audit("تعديل بيانات الدخول", { adm: a, before: { consultant: a.consultant || "", finance: a.finance || "",
+        specialties: a.specialties || [], admitAt: a.admitAt } });
+      closeDialog(); toast("تم حفظ التعديل");
+    }
     catch (e) { err.textContent = errText(e); }
   };
 }
@@ -1501,11 +1520,11 @@ function openEditAdmission(a) {
    الإعدادات (أدمن)
    ========================================================= */
 function renderSettings(tab) {
-  const tabs = [["users", "المستخدمين"], ["units", "الوحدات والأسرّة"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["hospital", "بيانات المستشفى"]];
+  const tabs = [["users", "المستخدمين"], ["units", "الوحدات والأسرّة"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["hospital", "بيانات المستشفى"], ["audit", "سجل التعديلات"]];
   const nav = `<nav class="tabs">${tabs.map(([k, t]) => `<a href="#/settings/${k}" class="${tab === k ? "on" : ""}">${t}</a>`).join("")}</nav>`;
   shell(nav + `<div id="tabBody"><div class="loading">جاري التحميل…</div></div>`);
   const body = document.getElementById("tabBody");
-  ({ users: tabUsers, units: tabUnits, vitals: tabVitalFields, lists: tabLists, hospital: tabHospital }[tab] || tabUsers)(body);
+  ({ users: tabUsers, units: tabUnits, vitals: tabVitalFields, lists: tabLists, hospital: tabHospital, audit: tabAudit }[tab] || tabUsers)(body);
 }
 
 /* ---------- المستخدمين ---------- */
@@ -1790,4 +1809,323 @@ function resizeImage(file, max) {
     img.onerror = reject;
     img.src = URL.createObjectURL(file);
   });
+}
+
+/* =========================================================
+   المرحلة 3: النقل والخروج والأرشيف وسجل التعديلات
+   ========================================================= */
+const DIS_TYPES = { improved: "تحسن", death: "وفاة", ward: "تحويل للداخلي", transfer: "تحويل لمستشفى أخرى" };
+const stayEnd = (a) => (a.status === "discharged" && a.dischargeAt ? toDate(a.dischargeAt) : new Date());
+function stayDays(a) {
+  const s = toDate(a.admitAt), e = stayEnd(a);
+  if (!s) return 0;
+  const s0 = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+  const e0 = new Date(e.getFullYear(), e.getMonth(), e.getDate());
+  return Math.round((e0 - s0) / 86400000) + 1;
+}
+const unitName = (id) => unitById(id)?.name || id;
+const bedName = (unitId, bed) => `${unitById(unitId)?.bedLabel || "سرير"} ${bed}`;
+
+/* ---------- سجل التعديلات ---------- */
+function audit(action, extra = {}) {
+  const a = extra.adm || S.P?.adm;
+  const rec = {
+    at: serverTimestamp(), uid: S.profile.uid, name: S.profile.displayName, action,
+    admissionId: a?.id || "", patientName: a?.patientName || "", unitId: a?.unitId || "",
+  };
+  if (extra.before) { const { id, ...rest } = extra.before; rec.before = rest; }
+  if (extra.details) rec.details = extra.details;
+  addDoc(collection(db, "audit"), rec).catch((e) => console.error("audit", e));
+}
+const KIND_LABEL = { history: "التاريخ المرضي", diagnosis: "تشخيص", consult: "رأي تخصص", investigation: "طلب أشعة/تحاليل" };
+function recLabel(col, old) {
+  if (col === "vitals") return "قراءة علامات حيوية";
+  if (col === "meds") return `علاج ${old?.name || ""}`;
+  return KIND_LABEL[old?.kind] || "سجل";
+}
+const oldRec = (col, id) => (S.P?.[col] || []).find((x) => x.id === id);
+async function pUpd(ref, data) {
+  const col = ref.parent.id, old = oldRec(col, ref.id);
+  await updateDoc(ref, data);
+  audit(`تعديل ${recLabel(col, old)}`, { before: old });
+}
+async function pDel(ref) {
+  const col = ref.parent.id, old = oldRec(col, ref.id);
+  await deleteDoc(ref);
+  audit(`حذف ${recLabel(col, old)}`, { before: old });
+}
+
+/* ---------- إضافات تبويب البيانات ---------- */
+function ptInfoExtra() {
+  const P = S.P, a = P.adm;
+  let html = "";
+  if (a.status === "discharged") {
+    const i = a.dischargeInfo || {};
+    html += `
+    <section class="panel dis-panel t-${a.dischargeType}">
+      <header><h2>بيانات الخروج</h2></header>
+      <dl class="kv">
+        <dt>نوع الخروج</dt><dd><strong>${DIS_TYPES[a.dischargeType] || ""}</strong></dd>
+        <dt>${a.dischargeType === "death" ? "وقت الوفاة" : "وقت الخروج"}</dt><dd>${fmtDateTime(a.dischargeAt)}</dd>
+        <dt>أيام الإقامة</dt><dd>${stayDays(a)} يوم</dd>
+        ${i.deathCause ? `<dt>سبب الوفاة</dt><dd>${pre(i.deathCause)}</dd>` : ""}
+        ${i.ward ? `<dt>القسم الداخلي</dt><dd>${esc(i.ward)}</dd>` : ""}
+        ${i.hospital ? `<dt>المستشفى</dt><dd>${esc(i.hospital)}</dd>` : ""}
+        ${i.reason ? `<dt>سبب التحويل</dt><dd>${pre(i.reason)}</dd>` : ""}
+        ${i.notes ? `<dt>ملاحظات</dt><dd>${pre(i.notes)}</dd>` : ""}
+        <dt>سجّل الخروج</dt><dd>${esc(a.dischargedByName)}</dd>
+      </dl>
+    </section>`;
+  }
+  if (a.moves?.length) {
+    html += `
+    <section class="panel">
+      <header><h2>سجل النقل</h2></header>
+      <ul class="entries">${[...a.moves].sort((x, y) => toDate(x.at) - toDate(y.at)).map((m) => `
+        <li><div class="entry-head"><strong>${esc(unitName(m.fromUnit))}، ${esc(bedName(m.fromUnit, m.fromBed))}</strong>
+          <span aria-hidden="true">←</span><strong>${esc(unitName(m.toUnit))}، ${esc(bedName(m.toUnit, m.toBed))}</strong>
+          <span class="by-line">${fmtDateTime(m.at)}، ${esc(m.byName)}</span></div>
+          ${m.reason ? `<p>${esc(m.reason)}</p>` : ""}</li>`).join("")}</ul>
+    </section>`;
+  }
+  if (isAdmin() && (P.pat.admissionsCount || 1) > 1) {
+    const list = P.prev;
+    html += `
+    <section class="panel">
+      <header><h2>الدخولات السابقة</h2>${list ? "" : `<button class="btn ghost sm" data-act="prevAdm">عرض</button>`}</header>
+      ${list ? (list.length ? `<ul class="entries">${list.map((x) => `
+        <li><div class="entry-head"><a href="#/patient/${x.id}"><strong>${fmtDate(x.admitAt)}</strong></a>
+          <span>${esc(unitName(x.unitId))}</span>
+          <span class="pill">${x.status === "active" ? "حالياً" : DIS_TYPES[x.dischargeType] || ""}</span>
+          <span class="by-line">${stayDays(x)} يوم</span></div></li>`).join("")}</ul>` : `<p class="muted">لا يوجد.</p>`) : ""}
+    </section>`;
+  }
+  return html ? `<div class="stack">${html}</div>` : "";
+}
+
+async function loadPrevAdmissions() {
+  const P = S.P;
+  try {
+    const snap = await getDocs(query(collection(db, "admissions"), where("patientId", "==", P.adm.patientId)));
+    P.prev = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => x.id !== P.adm.id)
+      .sort((x, y) => toDate(y.admitAt) - toDate(x.admitAt));
+    drawPatient();
+  } catch (e) { toast(errText(e), true); }
+}
+
+/* ---------- الخروج ---------- */
+function openDischarge() {
+  const a = S.P.adm;
+  const f = formDialog(`خروج: ${esc(a.patientName)}`, `
+    <fieldset class="seg seg-wrap">${Object.entries(DIS_TYPES).map(([k, l], i) =>
+      `<label><input type="radio" name="dtype" value="${k}" ${i === 0 ? "checked" : ""}> ${l}</label>`).join("")}</fieldset>
+    ${timeInput("at", "وقت الخروج")}
+    <label class="field df d-death"><span>سبب الوفاة</span><textarea name="deathCause" rows="2" class="ltr-auto"></textarea></label>
+    <label class="field df d-ward"><span>القسم الداخلي المحول إليه</span><input name="ward"></label>
+    <label class="field df d-transfer"><span>اسم المستشفى</span><input name="hospital"></label>
+    <label class="field df d-transfer"><span>سبب التحويل</span><textarea name="reason" rows="2"></textarea></label>
+    <label class="field"><span>ملاحظات (اختياري)</span><textarea name="notes" rows="2"></textarea></label>
+    <p class="note">بعد الخروج الملف بيتنقل للأرشيف والسرير بيفضى، والملف مش هيظهر غير للأدمن.</p>`,
+    "تأكيد الخروج",
+    async (f) => {
+      const type = f.querySelector('input[name="dtype"]:checked').value;
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      if (at < toDate(a.admitAt)) return "وقت الخروج لازم يكون بعد وقت الدخول.";
+      const info = { notes: f.elements.notes.value.trim() };
+      if (type === "death") { info.deathCause = f.elements.deathCause.value.trim(); if (!info.deathCause) return "اكتب سبب الوفاة."; }
+      if (type === "ward") { info.ward = f.elements.ward.value.trim(); if (!info.ward) return "اكتب القسم الداخلي."; }
+      if (type === "transfer") {
+        info.hospital = f.elements.hospital.value.trim(); info.reason = f.elements.reason.value.trim();
+        if (!info.hospital) return "اكتب اسم المستشفى.";
+      }
+      const aRef = doc(db, "admissions", a.id);
+      const pRef = doc(db, "patients", a.patientId);
+      await runTransaction(db, async (tx) => {
+        const aSnap = await tx.get(aRef);
+        const cur = aSnap.data();
+        if (cur.status !== "active") throw new Error("ALREADY_OUT");
+        const bedRef = doc(db, "beds", `${cur.unitId}_${cur.bed}`);
+        const bSnap = await tx.get(bedRef);
+        const pSnap = await tx.get(pRef);
+        tx.update(aRef, {
+          status: "discharged", dischargeAt: Timestamp.fromDate(at), dischargeType: type, dischargeInfo: info,
+          dischargedBy: S.profile.uid, dischargedByName: S.profile.displayName, ...upMeta(),
+        });
+        if (bSnap.exists() && bSnap.data().admissionId === a.id) tx.delete(bedRef);
+        if (pSnap.exists() && pSnap.data().currentAdmissionId === a.id)
+          tx.update(pRef, { currentAdmissionId: null, lastDischargeAt: Timestamp.fromDate(at) });
+      });
+      audit(`خروج: ${DIS_TYPES[type]}`, { adm: a, details: info });
+      toast(`تم تسجيل الخروج (${DIS_TYPES[type]})`);
+      if (!isAdmin()) setTimeout(() => (location.hash = `#/unit/${a.unitId}`), 0);
+    });
+  const sync = () => (f.dataset.dtype = f.querySelector('input[name="dtype"]:checked').value);
+  f.querySelectorAll('input[name="dtype"]').forEach((r) => (r.onchange = sync));
+  sync();
+}
+
+/* ---------- النقل بين الوحدات ---------- */
+async function openTransfer() {
+  const a = S.P.adm;
+  const occ = {};
+  try {
+    const snap = await getDocs(collection(db, "beds"));
+    snap.forEach((d) => { const x = d.data(); (occ[x.unitId] ||= new Set()).add(x.bed); });
+  } catch (e) { toast(errText(e), true); return; }
+  const freeBeds = (u) => Array.from({ length: u.beds }, (_, i) => i + 1).filter((n) => !occ[u.id]?.has(n));
+  const opts = units().filter((u) => freeBeds(u).length);
+  if (!opts.length) { toast("مفيش أي سرير فاضي في الوحدات.", true); return; }
+
+  const f = formDialog(`نقل: ${esc(a.patientName)}`, `
+    <p class="muted" style="margin:0">حالياً في ${esc(unitName(a.unitId))}، ${esc(bedName(a.unitId, a.bed))}</p>
+    <div class="row2">
+      <label class="field"><span>الوحدة</span><select name="unit">${opts.map((u) =>
+        `<option value="${u.id}" ${u.id === a.unitId ? "selected" : ""}>${esc(u.name)} (${freeBeds(u).length} فاضي)</option>`).join("")}</select></label>
+      <label class="field"><span>السرير</span><select name="bed"></select></label>
+    </div>
+    ${timeInput("at", "وقت النقل")}
+    <label class="field"><span>السبب (اختياري)</span><input name="reason"></label>
+    <div class="note" id="trNote"></div>`,
+    "تأكيد النقل",
+    async (f) => {
+      const toUnit = f.elements.unit.value, toBed = Number(f.elements.bed.value);
+      if (!toUnit || !toBed) return "اختر الوحدة والسرير.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      if (at < toDate(a.admitAt)) return "وقت النقل لازم يكون بعد وقت الدخول.";
+      const aRef = doc(db, "admissions", a.id);
+      const newBed = doc(db, "beds", `${toUnit}_${toBed}`);
+      await runTransaction(db, async (tx) => {
+        const cur = (await tx.get(aRef)).data();
+        if (cur.status !== "active") throw new Error("ALREADY_OUT");
+        const oldBed = doc(db, "beds", `${cur.unitId}_${cur.bed}`);
+        const nb = await tx.get(newBed);
+        if (nb.exists()) throw new Error("BED_TAKEN");
+        const ob = await tx.get(oldBed);
+        if (ob.exists() && ob.data().admissionId === a.id) tx.delete(oldBed);
+        tx.set(newBed, { unitId: toUnit, bed: toBed, admissionId: a.id, since: serverTimestamp() });
+        tx.update(aRef, {
+          unitId: toUnit, bed: toBed, ...upMeta(),
+          moves: arrayUnion({ fromUnit: cur.unitId, fromBed: cur.bed, toUnit, toBed, at: Timestamp.fromDate(at),
+            byName: S.profile.displayName, reason: f.elements.reason.value.trim() }),
+        });
+      });
+      audit("نقل", { adm: a, details: { from: `${unitName(a.unitId)} ${a.bed}`, to: `${unitName(toUnit)} ${toBed}` } });
+      toast(`تم النقل إلى ${unitName(toUnit)}، ${bedName(toUnit, toBed)}`);
+      if (!isAdmin() && !(S.profile.units || []).includes(toUnit)) setTimeout(() => (location.hash = "#/"), 0);
+    });
+  const fillBeds = () => {
+    const u = unitById(f.elements.unit.value);
+    f.elements.bed.innerHTML = freeBeds(u).map((n) => `<option value="${n}">${esc(u.bedLabel)} ${n}</option>`).join("");
+    document.getElementById("trNote").textContent = !isAdmin() && !(S.profile.units || []).includes(u.id)
+      ? "الوحدة دي مش ضمن وحداتك، يعني بعد النقل مش هتقدر تفتح الملف." : "";
+  };
+  f.elements.unit.onchange = fillBeds;
+  fillBeds();
+}
+
+/* ---------- الأرشيف (أدمن) ---------- */
+function renderArchive() {
+  const A = (S.A ||= { from: isoDay(new Date(Date.now() - 30 * 864e5)), to: isoDay(new Date()), unit: "", type: "", q: "" });
+  shell(`
+  <div class="toolbar"><h2>الأرشيف</h2></div>
+  <form class="filters" id="arcF">
+    <label class="field"><span>خروج من</span><input type="date" name="from" value="${A.from}"></label>
+    <label class="field"><span>إلى</span><input type="date" name="to" value="${A.to}"></label>
+    <label class="field"><span>الوحدة</span><select name="unit"><option value="">كل الوحدات</option>${units().map((u) =>
+      `<option value="${u.id}" ${A.unit === u.id ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+    <label class="field"><span>نوع الخروج</span><select name="type"><option value="">الكل</option>${Object.entries(DIS_TYPES).map(([k, l]) =>
+      `<option value="${k}" ${A.type === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    <label class="field grow"><span>بحث بالاسم أو الرقم القومي</span><input name="q" value="${esc(A.q)}" placeholder="الرقم القومي بيدور في كل السنين"></label>
+    <button class="btn">عرض</button>
+  </form>
+  <div id="arcBody"><div class="loading">جاري التحميل…</div></div>`);
+  const f = document.getElementById("arcF");
+  f.onsubmit = (ev) => {
+    ev.preventDefault();
+    Object.assign(A, { from: f.elements.from.value, to: f.elements.to.value, unit: f.elements.unit.value, type: f.elements.type.value, q: f.elements.q.value.trim() });
+    loadArchive();
+  };
+  loadArchive();
+}
+
+async function loadArchive() {
+  const A = S.A, body = document.getElementById("arcBody");
+  if (!body) return;
+  body.innerHTML = `<div class="loading">جاري التحميل…</div>`;
+  let rows = [];
+  try {
+    if (/^\d{14}$/.test(A.q)) {
+      const byNid = await getDocs(query(collection(db, "admissions"), where("nationalId", "==", A.q)));
+      rows = byNid.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const babies = await getDocs(query(collection(db, "patients"), where("motherNationalId", "==", A.q)));
+      for (const b of babies.docs) {
+        const s = await getDocs(query(collection(db, "admissions"), where("patientId", "==", b.id)));
+        rows.push(...s.docs.map((d) => ({ id: d.id, ...d.data() })));
+      }
+      rows = rows.filter((r) => r.status === "discharged");
+    } else {
+      if (!A.from || !A.to) { body.innerHTML = `<div class="err">حدد الفترة.</div>`; return; }
+      const snap = await getDocs(query(collection(db, "admissions"),
+        where("dischargeAt", ">=", Timestamp.fromDate(new Date(A.from + "T00:00:00"))),
+        where("dischargeAt", "<=", Timestamp.fromDate(new Date(A.to + "T23:59:59"))),
+        orderBy("dischargeAt", "desc")));
+      rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      if (A.q) rows = rows.filter((r) => (r.patientName || "").includes(A.q));
+    }
+  } catch (e) { body.innerHTML = `<div class="err">${esc(errText(e))}</div>`; return; }
+  if (A.unit) rows = rows.filter((r) => r.unitId === A.unit);
+  if (A.type) rows = rows.filter((r) => r.dischargeType === A.type);
+  rows.sort((x, y) => toDate(y.dischargeAt) - toDate(x.dischargeAt));
+
+  const counts = Object.keys(DIS_TYPES).map((k) => [k, rows.filter((r) => r.dischargeType === k).length]);
+  body.innerHTML = !rows.length ? `<div class="empty">لا يوجد حالات خرجت بالشروط دي.</div>` : `
+    <div class="arc-sum"><span><b>${rows.length}</b> حالة</span>${counts.map(([k, n]) =>
+      `<span class="dis t-${k}"><b>${n}</b> ${DIS_TYPES[k]}</span>`).join("")}</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>الاسم</th><th>الرقم القومي</th><th>الوحدة</th><th>الدخول</th><th>الخروج</th><th>الإقامة</th><th>نوع الخروج</th><th>المعاملة المالية</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><a href="#/patient/${r.id}"><strong>${esc(r.patientName)}</strong></a></td>
+        <td class="ltr">${esc(r.nationalId) || `<span class="muted">—</span>`}</td>
+        <td>${esc(unitName(r.unitId))}</td>
+        <td>${fmtDate(r.admitAt)}</td>
+        <td>${fmtDateTime(r.dischargeAt)}</td>
+        <td>${stayDays(r)} يوم</td>
+        <td><span class="dis t-${r.dischargeType}">${DIS_TYPES[r.dischargeType] || ""}</span></td>
+        <td>${esc(r.finance) || "—"}</td></tr>`).join("")}</tbody>
+    </table></div>`;
+}
+
+/* ---------- سجل التعديلات (أدمن) ---------- */
+const HIDE_KEYS = new Set(["createdBy", "createdAt", "createdByName", "updatedBy", "updatedAt", "updatedByName", "enteredAt", "resultBy"]);
+function fmtVal(v) {
+  if (v == null || v === "") return "—";
+  if (v?.toDate) return fmtDateTime(v);
+  if (Array.isArray(v)) return v.map(fmtVal).join("، ");
+  if (typeof v === "object") return Object.entries(v).filter(([, x]) => x !== "" && x != null).map(([k, x]) => `${k}: ${fmtVal(x)}`).join("، ");
+  return String(v);
+}
+async function tabAudit(body) {
+  let list = [];
+  try {
+    const snap = await getDocs(query(collection(db, "audit"), orderBy("at", "desc"), limit(300)));
+    list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (e) { body.innerHTML = `<div class="err">${esc(errText(e))}</div>`; return; }
+  body.innerHTML = `
+  <div class="toolbar"><h2>سجل التعديلات</h2><input id="auQ" class="search" placeholder="بحث باسم المريض أو المستخدم"></div>
+  <p class="muted">آخر 300 عملية: الدخول، والخروج، والنقل، وأي تعديل أو حذف في ملف المريض، مع البيانات قبل التعديل.</p>
+  ${list.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>الوقت</th><th>المستخدم</th><th>العملية</th><th>المريض</th><th>الوحدة</th><th>التفاصيل</th></tr></thead>
+    <tbody id="auBody">${list.map((x) => `<tr data-s="${esc((x.patientName || "") + " " + (x.name || ""))}">
+      <td class="nowrap">${fmtDateTime(x.at)}</td>
+      <td>${esc(x.name)}</td>
+      <td>${esc(x.action)}</td>
+      <td>${x.admissionId ? `<a href="#/patient/${x.admissionId}">${esc(x.patientName)}</a>` : "—"}</td>
+      <td>${esc(unitName(x.unitId))}</td>
+      <td>${x.before || x.details ? `<details><summary>عرض</summary>
+        ${x.details ? `<p class="au-d">${esc(fmtVal(x.details))}</p>` : ""}
+        ${x.before ? `<p class="au-d"><strong>قبل التعديل:</strong> ${esc(fmtVal(Object.fromEntries(Object.entries(x.before).filter(([k]) => !HIDE_KEYS.has(k)))))}</p>` : ""}
+      </details>` : ""}</td></tr>`).join("")}</tbody>
+  </table></div>` : `<div class="empty">لا يوجد عمليات مسجلة بعد.</div>`}`;
+  const q = document.getElementById("auQ");
+  q.oninput = () => body.querySelectorAll("#auBody tr").forEach((tr) => tr.classList.toggle("hidden", !tr.dataset.s.includes(q.value.trim())));
 }
