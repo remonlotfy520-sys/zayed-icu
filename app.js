@@ -30,6 +30,9 @@ const DEFAULT_UNITS = [
   { id: "stroke", name: "رعاية السكتة",    beds: 6,  bedLabel: "سرير",  newborn: false },
 ];
 
+const DEFAULT_FINANCE = ["نفقة", "تأمين", "مجاني", "اقتصادي"];
+const listOf = (key) => S.settings?.[key] ?? (key === "financeTypes" ? DEFAULT_FINANCE : []);
+
 const S = {
   settings: undefined,   // undefined = لسه بيحمل، null = أول تشغيل
   user: null,
@@ -544,7 +547,10 @@ function openAdmissionDialog(unit, bed) {
       <input name="admitAt" type="datetime-local" value="${toLocalInput(now)}" max="${toLocalInput(now)}"
         ${earliest ? `min="${toLocalInput(earliest)}"` : ""}>
       ${earliest ? `<span class="hint">مسموح من ${fmtDateTime(earliest)} فقط، حسب صلاحيتك.</span>` : ""}</label>
-    <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], "")}</select></label>
+    <div class="row2">
+      <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], "")}</select></label>
+      <label class="field"><span>المعاملة المالية</span><select name="finance">${optionsHtml(listOf("financeTypes"), "")}</select></label>
+    </div>
     <div class="field"><span>التخصصات المشتركة</span>${checksHtml("spec", s.specialties || [])}</div>
 
     <div class="err" id="admErr"></div>
@@ -671,6 +677,7 @@ function openAdmissionDialog(unit, bed) {
     const earliestNow = earliestEditable();
     if (earliestNow && admitAt < earliestNow) { err.textContent = `مسموح لك تسجل دخول من ${fmtDateTime(earliestNow)} فقط. لتاريخ أقدم كلّم الأدمن.`; return; }
     if (!f.consultant.value) { err.textContent = "اختر استشاري الحالة."; return; }
+    if (!f.finance.value) { err.textContent = "اختر المعاملة المالية."; return; }
 
     const btn = f.querySelector("button.btn"); btn.disabled = true;
     const bedRef = doc(db, "beds", `${unit.id}_${bed}`);
@@ -693,7 +700,7 @@ function openAdmissionDialog(unit, bed) {
           birthDate: patient.birthDate, birthDateEstimated: patient.birthDateEstimated,
           isNewborn: patient.isNewborn, nationalId: patient.nationalId || "",
           unitId: unit.id, bed, admitAt: Timestamp.fromDate(admitAt),
-          consultant: f.consultant.value, specialties: checkedValues(f, "spec"),
+          consultant: f.consultant.value, specialties: checkedValues(f, "spec"), finance: f.finance.value,
           admissionNo: count, status: "active",
           createdBy: uid, createdByName: S.profile.displayName, createdAt: serverTimestamp(),
         });
@@ -742,6 +749,19 @@ const BASE_VITALS = [
   { key: "gcs", label: "GCS", unit: "" },
   { key: "uop", label: "كمية البول", unit: "ml" },
 ];
+// ألوان تمييز خانات العلامات الحيوية
+const VCOLORS = {
+  "": { name: "بدون", bg: "", fg: "" },
+  red: { name: "أحمر", bg: "#FBE6E6", fg: "#9B1C1C" },
+  orange: { name: "برتقالي", bg: "#FDEBD8", fg: "#9A4A0B" },
+  yellow: { name: "أصفر", bg: "#FBF4CF", fg: "#7A5C00" },
+  green: { name: "أخضر", bg: "#E1F3E6", fg: "#1E6B3A" },
+  blue: { name: "أزرق", bg: "#E1ECFA", fg: "#1D4E89" },
+  purple: { name: "بنفسجي", bg: "#ECE4F8", fg: "#5B2E91" },
+  gray: { name: "رمادي", bg: "#ECEFEE", fg: "#3E4B48" },
+};
+const vStyle = (c) => (VCOLORS[c]?.bg ? `style="background:${VCOLORS[c].bg};color:${VCOLORS[c].fg}"` : "");
+
 function unitVitals(u) {
   if (u?.vitals?.length) return u.vitals;
   const extra = u?.id === "nicu"
@@ -882,7 +902,7 @@ function drawPatient() {
 
   const nConsult = P.entries.filter((e) => e.kind === "consult").length;
   const nPending = P.entries.filter((e) => e.kind === "investigation" && !e.result).length;
-  const nMeds = P.meds.filter((m) => !m.stopDate).length;
+  const nMeds = P.meds.filter((m) => !m.stopDate && !medEnded(m)).length;
   const badge = { consult: nConsult, inv: nPending, meds: nMeds };
 
   const body = { info: ptInfo, history: ptHistory, consult: ptConsult, inv: ptInv, vitals: ptVitals, meds: ptMeds }[P.tab]();
@@ -980,6 +1000,7 @@ function ptInfo() {
         <dt>أيام الإقامة</dt><dd>${dayOfStay(a.admitAt)} يوم</dd>
         <dt>الوحدة</dt><dd>${esc(unit.name)}، ${esc(unit.bedLabel)} ${a.bed}</dd>
         <dt>استشاري الحالة</dt><dd>${esc(a.consultant) || "—"}</dd>
+        <dt>المعاملة المالية</dt><dd>${esc(a.finance) || "—"}</dd>
         <dt>التخصصات المشتركة</dt><dd>${specs}</dd>
         <dt>سجّل الدخول</dt><dd>${esc(a.createdByName)}</dd>
       </dl>
@@ -1208,8 +1229,8 @@ function ptVitals() {
       <tr>${rs.map((r) => `<th class="rd-h">${colHead(r)}</th>`).join("")}</tr>
     </thead>
     <tbody>
-      ${fields.map((f) => `<tr><th class="stick">${esc(f.label)}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}</th>
-        ${rs.map((r) => `<td class="v">${esc(r.values?.[f.key] ?? "")}</td>`).join("")}</tr>`).join("")}
+      ${fields.map((f) => `<tr><th class="stick" ${vStyle(f.color)}>${esc(f.label)}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}</th>
+        ${rs.map((r) => `<td class="v" ${vStyle(f.color)}>${esc(r.values?.[f.key] ?? "")}</td>`).join("")}</tr>`).join("")}
       <tr class="note-row"><th class="stick">تطور الحالة</th>${rs.map((r) => `<td class="note ltr-auto">${pre(r.note || "")}</td>`).join("")}</tr>
       <tr class="by-row"><th class="stick">سجّل</th>${rs.map((r) => `<td>${esc(r.createdByName)}</td>`).join("")}</tr>
     </tbody>
@@ -1220,7 +1241,7 @@ function openVitals(r) {
   const fields = unitVitals(unitById(S.P.adm.unitId));
   formDialog(r ? "تعديل القراءة" : "إضافة قراءة", `
     ${timeInput("at", "وقت القراءة", r?.at || new Date())}
-    <div class="vgrid">${fields.map((f) => `<label class="field"><span>${esc(f.label)}${f.unit ? ` (${esc(f.unit)})` : ""}</span>
+    <div class="vgrid">${fields.map((f) => `<label class="field vfield" ${vStyle(f.color)}><span>${esc(f.label)}${f.unit ? ` (${esc(f.unit)})` : ""}</span>
       <input name="v_${f.key}" class="ltr" value="${esc(r?.values?.[f.key] ?? "")}" autocomplete="off"></label>`).join("")}</div>
     <label class="field"><span>تطور الحالة</span><textarea name="note" rows="4" class="ltr-auto">${esc(r?.note || "")}</textarea></label>`,
     r ? "حفظ التعديل" : "حفظ القراءة",
@@ -1238,6 +1259,11 @@ function openVitals(r) {
 }
 
 /* ---------- العلاج ---------- */
+// المدة: عدد أيام العلاج (اختياري). آخر يوم = يوم البداية + المدة - 1
+const addDays = (s, n) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() + n); return isoDay(d); };
+const medEnd = (m) => (m.duration ? addDays(m.startDate, m.duration - 1) : null);
+const medEnded = (m) => !m.stopDate && !!medEnd(m) && medEnd(m) < isoDay(new Date());
+const medDayNo = (m, day) => Math.round((new Date(day + "T00:00:00") - new Date(m.startDate + "T00:00:00")) / 86400000) + 1;
 const sortedDoses = (m) => [...(m.doses || [])].sort((x, y) => x.from.localeCompare(y.from));
 const currentDose = (m) => sortedDoses(m).pop() || {};
 
@@ -1249,19 +1275,22 @@ function ptMeds() {
   if (!P.meds.length) return head + `<div class="empty">لا يوجد علاج مسجل. العلاج بيفضل مستمر كل يوم لحد ما يتوقف.</div>`;
 
   const days = dayRange(isoDay(toDate(a.admitAt)), isoDay(new Date()));
-  const meds = [...P.meds].sort((x, y) => (x.stopDate ? 1 : 0) - (y.stopDate ? 1 : 0) || x.startDate.localeCompare(y.startDate));
+  const off = (m) => (m.stopDate || medEnded(m) ? 1 : 0);
+  const meds = [...P.meds].sort((x, y) => off(x) - off(y) || x.startDate.localeCompare(y.startDate));
   const cell = (m, day) => {
-    if (day < m.startDate || (m.stopDate && day > m.stopDate)) return `<td></td>`;
+    const end = medEnd(m);
+    if (day < m.startDate || (m.stopDate && day > m.stopDate) || (end && day > end)) return `<td></td>`;
     if (m.stopDate === day) return `<td class="c-stop">أوقف</td>`;
     const d = sortedDoses(m).filter((x) => x.from <= day).pop();
     if (!d) return `<td></td>`;
     const changed = d.from === day && day !== m.startDate;
-    return `<td class="c-on ${changed ? "c-chg" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small></td>`;
+    const dn = m.duration ? `<em>${medDayNo(m, day)}/${m.duration}</em>` : "";
+    return `<td class="c-on ${changed ? "c-chg" : ""} ${end === day ? "c-last" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small>${dn}</td>`;
   };
   const acts = (m) => {
     if (!add) return "";
     const b = [];
-    if (!m.stopDate) b.push(`<button class="linkbtn" data-act="mChange" data-id="${m.id}">تغيير الجرعة</button>`,
+    if (!m.stopDate) b.push(`<button class="linkbtn" data-act="mChange" data-id="${m.id}">${medEnded(m) ? "تمديد" : "تغيير الجرعة"}</button>`,
       `<button class="linkbtn" data-act="mStop" data-id="${m.id}">إيقاف</button>`);
     else if (isAdmin() || (minEdit && m.stopDate >= minEdit)) b.push(`<button class="linkbtn" data-act="mResume" data-id="${m.id}">إلغاء الإيقاف</button>`);
     if (pCanEdit(m.enteredAt)) b.push(`<button class="linkbtn del" data-act="mDel" data-id="${m.id}">حذف</button>`);
@@ -1273,11 +1302,16 @@ function ptMeds() {
       `<th class="day-h">${fmtDayShort(d)}<small>اليوم ${stayDayOn(a.admitAt, d)}</small></th>`).join("")}</tr></thead>
     <tbody>${meds.map((m) => {
       const cd = currentDose(m);
-      return `<tr class="${m.stopDate ? "stopped" : ""}">
+      const today = isoDay(new Date());
+      const status = m.stopDate ? `متوقف ${fmtDate(m.stopDate)}`
+        : medEnded(m) ? `انتهت المدة (${m.duration} يوم) في ${fmtDate(medEnd(m))}`
+        : m.duration ? `اليوم ${medDayNo(m, today)} من ${m.duration}، ينتهي ${fmtDate(medEnd(m))}`
+        : `مستمر من ${fmtDate(m.startDate)}، اليوم ${medDayNo(m, today)}`;
+      return `<tr class="${off(m) ? "stopped" : ""}">
         <th class="stick med-h">
           <strong class="ltr-auto">${esc(m.name)}</strong>
           <span>${esc(m.route)}${cd.frequency ? `، ${esc(cd.frequency)}` : ""}</span>
-          <span class="status">${m.stopDate ? `متوقف ${fmtDate(m.stopDate)}` : `مستمر من ${fmtDate(m.startDate)}`}</span>
+          <span class="status">${status}</span>
           ${m.note ? `<span class="muted">${esc(m.note)}</span>` : ""}
           ${acts(m)}
         </th>${days.map((d) => cell(m, d)).join("")}</tr>`;
@@ -1297,7 +1331,10 @@ function openMed() {
       <label class="field"><span>عدد المرات</span><input name="frequency" list="dlFreq" class="ltr" autocomplete="off"></label>
       ${dateInput("startDate", "يبدأ من يوم", today, isoDay(toDate(S.P.adm.admitAt)))}
     </div>
-    <label class="field"><span>ملاحظة (اختياري)</span><input name="note"></label>`,
+    <div class="row2">
+      <label class="field"><span>المدة بالأيام (اختياري)</span><input name="duration" type="number" min="1" max="365" placeholder="مستمر لحد الإيقاف"></label>
+      <label class="field"><span>ملاحظة (اختياري)</span><input name="note"></label>
+    </div>`,
     "إضافة العلاج",
     async (f) => {
       const name = f.elements.medName.value.trim(), dose = f.elements.dose.value.trim();
@@ -1307,9 +1344,10 @@ function openMed() {
       if (!route) return "اختر طريقة الإعطاء.";
       if (!frequency) return "اكتب عدد المرات.";
       const [start, er] = readDate(f.elements.startDate, isoDay(toDate(S.P.adm.admitAt))); if (er) return er;
+      const [duration, der] = readDuration(f.elements.duration); if (der) return der;
       const now = Timestamp.now();
       await addDoc(subRef("meds"), {
-        name, route, note: f.elements.note.value.trim(), startDate: start, stopDate: null,
+        name, route, note: f.elements.note.value.trim(), startDate: start, stopDate: null, duration,
         doses: [{ dose, frequency, from: start, byName: S.profile.displayName }],
         at: now, enteredAt: now, ...meta(),
       });
@@ -1317,26 +1355,44 @@ function openMed() {
     });
 }
 
+function readDuration(input) {
+  if (input.value === "") return [null, ""];
+  const n = Number(input.value);
+  if (!Number.isInteger(n) || n < 1 || n > 365) return [null, "المدة لازم تكون رقم صحيح من 1 لـ 365 يوم."];
+  return [n, ""];
+}
+
 function openMedChange(m) {
   const cd = currentDose(m);
   const minStr = [m.startDate, earliestDateStr()].filter(Boolean).sort().pop();
-  formDialog(`تغيير جرعة ${esc(m.name)}`, `
+  formDialog(`تغيير الجرعة أو المدة: ${esc(m.name)}`, `
     <div class="row2">
       <label class="field"><span>الجرعة الجديدة</span><input name="dose" class="ltr" value="${esc(cd.dose || "")}"></label>
       <label class="field"><span>عدد المرات</span><input name="frequency" list="dlFreq" class="ltr" value="${esc(cd.frequency || "")}" autocomplete="off"></label>
     </div>
-    ${dateInput("from", "من يوم", isoDay(new Date()), minStr)}
-    <p class="hint">الجرعة القديمة بتفضل ظاهرة في الأيام اللي قبل كده.</p>`,
-    "حفظ الجرعة",
+    <div class="row2">
+      ${dateInput("from", "من يوم", isoDay(new Date()), minStr)}
+      <label class="field"><span>المدة الكلية بالأيام</span><input name="duration" type="number" min="1" max="365" value="${m.duration || ""}" placeholder="مستمر لحد الإيقاف"></label>
+    </div>
+    <p class="hint">المدة بتتحسب من أول يوم للدواء (${fmtDate(m.startDate)}). الجرعة القديمة بتفضل ظاهرة في الأيام اللي قبل التغيير.</p>`,
+    "حفظ",
     async (f) => {
       const dose = f.elements.dose.value.trim(), frequency = f.elements.frequency.value.trim();
       if (!dose || !frequency) return "اكتب الجرعة وعدد المرات.";
       const [from, er] = readDate(f.elements.from, m.startDate); if (er) return er;
-      if (!isAdmin() && sortedDoses(m).some((x) => x.from > from)) return "فيه تغيير جرعة مسجل بعد التاريخ ده.";
-      const doses = sortedDoses(m).filter((x) => x.from !== from);
-      doses.push({ dose, frequency, from, byName: S.profile.displayName });
-      await updateDoc(subRef("meds", m.id), { doses, at: Timestamp.now(), ...upMeta() });
-      toast("تم حفظ الجرعة الجديدة");
+      const [duration, der] = readDuration(f.elements.duration); if (der) return der;
+      if (duration && addDays(m.startDate, duration - 1) < from) return "المدة بتخلص قبل تاريخ التغيير. زوّد المدة.";
+      const cd2 = currentDose(m);
+      const doseChanged = dose !== cd2.dose || frequency !== cd2.frequency;
+      const upd = { duration, at: Timestamp.now(), ...upMeta() };
+      if (doseChanged) {
+        if (!isAdmin() && sortedDoses(m).some((x) => x.from > from)) return "فيه تغيير جرعة مسجل بعد التاريخ ده.";
+        const doses = sortedDoses(m).filter((x) => x.from !== from);
+        doses.push({ dose, frequency, from, byName: S.profile.displayName });
+        upd.doses = doses;
+      }
+      await updateDoc(subRef("meds", m.id), upd);
+      toast("تم الحفظ");
     });
 }
 
@@ -1415,7 +1471,10 @@ function openEditAdmission(a) {
     <label class="field"><span>تاريخ ووقت الدخول</span>
       <input name="admitAt" type="datetime-local" value="${toLocalInput(toDate(a.admitAt))}" max="${toLocalInput(new Date())}" ${admin ? "" : "disabled"}>
       ${admin ? "" : `<span class="hint">تعديل تاريخ الدخول للأدمن فقط.</span>`}</label>
-    <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], a.consultant)}</select></label>
+    <div class="row2">
+      <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], a.consultant)}</select></label>
+      <label class="field"><span>المعاملة المالية</span><select name="finance">${optionsHtml(listOf("financeTypes"), a.finance || "")}</select></label>
+    </div>
     <div class="field"><span>التخصصات المشتركة</span>${checksHtml("spec", [...new Set([...(s.specialties || []), ...(a.specialties || [])])], a.specialties || [])}</div>
     <div class="err" id="aeErr"></div>
     <div class="actions"><button class="btn">حفظ التعديل</button><button type="button" class="btn ghost" data-close>إلغاء</button></div>
@@ -1425,7 +1484,8 @@ function openEditAdmission(a) {
     ev.preventDefault();
     const err = document.getElementById("aeErr");
     if (!f.consultant.value) { err.textContent = "اختر استشاري الحالة."; return; }
-    const upd = { consultant: f.consultant.value, specialties: checkedValues(f, "spec"),
+    if (!f.finance.value) { err.textContent = "اختر المعاملة المالية."; return; }
+    const upd = { consultant: f.consultant.value, finance: f.finance.value, specialties: checkedValues(f, "spec"),
       updatedAt: serverTimestamp(), updatedBy: S.profile.uid };
     if (admin) {
       const d = new Date(f.admitAt.value);
@@ -1608,10 +1668,13 @@ function tabVitalFields(body, unitId) {
     <div class="unit-bar">${list.map((x) => `<button class="chip ${x.id === u.id ? "on" : ""}" data-unit="${x.id}">${esc(x.name)}</button>`).join("")}</div>
     <div class="toolbar"><h2>خانات العلامات الحيوية: ${esc(u.name)}</h2><button class="btn ghost" id="addField">إضافة خانة</button></div>
     <div class="table-wrap"><table class="units-edit">
-      <thead><tr><th>الخانة</th><th>الوحدة (Unit)</th><th>الترتيب</th><th></th></tr></thead>
+      <thead><tr><th>الخانة</th><th>الوحدة (Unit)</th><th>اللون</th><th>الترتيب</th><th></th></tr></thead>
       <tbody>${rows.map((f, i) => `<tr>
         <td><input data-i="${i}" data-k="label" value="${esc(f.label)}"></td>
         <td><input data-i="${i}" data-k="unit" value="${esc(f.unit)}" class="ltr" style="width:110px"></td>
+        <td><div class="swatches" role="radiogroup" aria-label="لون الخانة">${Object.entries(VCOLORS).map(([k, c]) =>
+          `<button type="button" class="sw ${(f.color || "") === k ? "on" : ""}" data-sw="${i}" data-c="${k}" title="${c.name}" aria-label="${c.name}"
+            style="background:${c.bg || "#fff"}">${k ? "" : "∅"}</button>`).join("")}</div></td>
         <td class="nowrap"><button class="btn ghost sm" data-up="${i}" ${i === 0 ? "disabled" : ""} aria-label="لفوق">▲</button>
           <button class="btn ghost sm" data-down="${i}" ${i === rows.length - 1 ? "disabled" : ""} aria-label="لتحت">▼</button></td>
         <td><button class="btn ghost sm" data-del="${i}">حذف</button></td></tr>`).join("")}</tbody>
@@ -1621,6 +1684,7 @@ function tabVitalFields(body, unitId) {
     <div class="actions"><button class="btn" id="saveFields">حفظ الخانات</button></div>`;
     body.querySelectorAll("[data-unit]").forEach((b) => (b.onclick = () => tabVitalFields(body, b.dataset.unit)));
     body.querySelectorAll("[data-k]").forEach((el) => (el.oninput = () => (rows[el.dataset.i][el.dataset.k] = el.value)));
+    body.querySelectorAll("[data-sw]").forEach((b) => (b.onclick = () => { rows[b.dataset.sw].color = b.dataset.c; draw(); }));
     const move = (i, j) => { [rows[i], rows[j]] = [rows[j], rows[i]]; draw(); };
     body.querySelectorAll("[data-up]").forEach((b) => (b.onclick = () => move(+b.dataset.up, +b.dataset.up - 1)));
     body.querySelectorAll("[data-down]").forEach((b) => (b.onclick = () => move(+b.dataset.down, +b.dataset.down + 1)));
@@ -1628,7 +1692,7 @@ function tabVitalFields(body, unitId) {
     document.getElementById("addField").onclick = () => { rows.push({ key: "f" + Date.now().toString(36), label: "", unit: "" }); draw(); };
     document.getElementById("saveFields").onclick = async () => {
       const err = document.getElementById("vfErr");
-      rows = rows.map((f) => ({ key: f.key, label: String(f.label || "").trim(), unit: String(f.unit || "").trim() }));
+      rows = rows.map((f) => ({ key: f.key, label: String(f.label || "").trim(), unit: String(f.unit || "").trim(), color: f.color || "" }));
       if (!rows.length) { err.textContent = "لازم خانة واحدة على الأقل."; return; }
       if (rows.some((f) => !f.label)) { err.textContent = "كل خانة لازم يكون ليها اسم."; return; }
       const updated = units().map((x) => (x.id === u.id ? { ...x, vitals: rows } : x));
@@ -1646,12 +1710,13 @@ function tabLists(body) {
       <div class="toolbar"><h2>${title}</h2></div>
       <div class="list-editor">
         <form class="add" data-key="${key}"><input placeholder="${ph}" required><button class="btn">إضافة</button></form>
-        <div class="list-items">${(S.settings[key] || []).map((x, i) =>
+        <div class="list-items">${listOf(key).map((x, i) =>
           `<span>${esc(x)}<button type="button" data-key="${key}" data-i="${i}" aria-label="حذف ${esc(x)}">×</button></span>`).join("")
           || `<span class="muted" style="border:0;background:none">القائمة فاضية</span>`}</div>
       </div>
     </div>`;
-  body.innerHTML = block("consultants", "الاستشاريين", "مثال: د. أحمد محمود")
+  body.innerHTML = block("financeTypes", "المعاملة المالية", "مثال: تعاقد شركة")
+    + block("consultants", "الاستشاريين", "مثال: د. أحمد محمود")
     + block("specialties", "التخصصات المشتركة", "مثال: باطنة")
     + block("investigations", "التحاليل والأشعة الشائعة", "مثال: CBC")
     + block("drugs", "الأدوية الشائعة", "مثال: Ceftriaxone");
@@ -1662,14 +1727,14 @@ function tabLists(body) {
   body.querySelectorAll("form.add").forEach((f) => (f.onsubmit = (ev) => {
     ev.preventDefault();
     const v = f.querySelector("input").value.trim();
-    const arr = [...(S.settings[f.dataset.key] || [])];
+    const arr = [...listOf(f.dataset.key)];
     if (!v) return;
     if (arr.includes(v)) { toast("موجود بالفعل في القائمة", true); return; }
     arr.push(v);
     save(f.dataset.key, arr);
   }));
   body.querySelectorAll(".list-items button").forEach((b) => (b.onclick = () => {
-    const arr = [...(S.settings[b.dataset.key] || [])];
+    const arr = [...listOf(b.dataset.key)];
     arr.splice(Number(b.dataset.i), 1);
     save(b.dataset.key, arr);
   }));
