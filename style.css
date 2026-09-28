@@ -383,3 +383,50 @@ table.stats td:first-child,table.stats th:first-child{text-align:start}
 .tag.hot{background:var(--danger-soft);color:var(--danger);border-color:#EFC2C2;font-weight:600}
 .bed-flag{position:absolute;top:50px;inset-inline-end:10px;background:#fff;color:var(--danger);border-radius:999px;padding:0 8px;font-size:12px;font-weight:700}
 @media (max-width:760px){.cl-row{grid-template-columns:1fr}}
+
+/* ---------- Red Flag وتوسعة الحالة السريرية ---------- */
+.cl-row{grid-template-columns:repeat(3,minmax(0,1fr))}
+.cl-box.warn{background:var(--amber-soft);border-color:#EBD3A8}
+.cl-box.warn strong{color:var(--amber)}
+.panel.clinical.flagged{border-color:#E59C9C;box-shadow:inset 4px 0 0 var(--danger)}
+.redflag{background:var(--danger);color:#fff;border-radius:8px;padding:6px 12px;font-weight:600;margin-bottom:10px}
+.checks label.rf:has(input:checked){border-color:var(--danger);background:var(--danger-soft);color:var(--danger)}
+.bed.occ.rf{background:#8E2A2A}
+.bed.occ.rf:hover{background:#6F1F1F}
+.tag.mr{direction:ltr;font-weight:600}
+
+/* ---------- المرحلة 5: المرضى والداخلي والعمليات والتنبيهات ---------- */
+a.plain{text-decoration:none;color:inherit}
+a.plain:hover{text-decoration:underline}
+.pre-wrap{white-space:pre-wrap}
+.stack-gap{margin-top:16px}
+.bell-wrap{position:relative}
+.bell{background:none;border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:15px;display:inline-flex;align-items:center;gap:4px}
+.bell b{background:#fff;color:var(--ink);border-radius:999px;font-size:11.5px;padding:0 6px}
+.bell.urgent{background:var(--danger);border-color:var(--danger)}
+.bell-panel{position:absolute;top:calc(100% + 8px);inset-inline-end:0;width:min(360px,90vw);max-height:70vh;overflow:auto;background:#fff;color:var(--ink);
+  border-radius:12px;box-shadow:0 12px 40px rgba(10,40,36,.25);z-index:20;padding:6px}
+.nt{padding:9px 10px;border-radius:8px;font-size:14px;display:grid;gap:4px}
+.nt + .nt{margin-top:4px}
+.nt a{text-decoration:none}
+.nt.rf{background:var(--danger-soft)}
+.nt.op{background:#E6EEF8}
+.nt.los{background:var(--amber-soft)}
+.nt .btn{justify-self:start}
+.add-row{display:flex;gap:8px}
+.add-row input{flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 11px}
+.pick-list{list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:50vh;overflow:auto}
+.pick-list button{width:100%;text-align:start;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer;display:flex;flex-wrap:wrap;gap:8px;font:inherit}
+.pick-list button:hover{border-color:var(--teal);background:var(--teal-soft)}
+.med-add{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.med-add input{border:1px solid var(--line);border-radius:8px;padding:6px 10px;flex:1;min-width:120px}
+.perm-grid{display:grid;gap:10px}
+.dis.op-scheduled{background:#E6EEF8;color:#24507F}
+.dis.op-done{background:var(--teal-soft);color:var(--teal-dark)}
+.dis.op-cancelled{background:#ECEFEE;color:#56706A;text-decoration:line-through}
+tr.day-row td{background:#F6F9F8;font-weight:700}
+.bed.occ.ward{background:#2F5E86}
+.bed.occ.ward:hover{background:#244A6B}
+.bed.occ.ward.rf{background:#8E2A2A}
+.bed.occ.ward .bed-no,.bed.occ.ward .bed-day small{color:#C9DCEB}
+@media (max-width:760px){.nav{overflow-x:auto}}
