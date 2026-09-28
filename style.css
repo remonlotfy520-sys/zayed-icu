@@ -357,3 +357,15 @@ table.stats td:first-child,table.stats th:first-child{text-align:start}
   .table-wrap{border:0;overflow:visible}
   .page{max-width:none;padding:0}
 }
+
+/* ---------- قوائم مرجعية، معاملة مالية، دخولات سابقة ---------- */
+.opt-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.opt{border:1px dashed #AFC3BE;background:#fff;border-radius:999px;padding:2px 10px;font-size:13px;cursor:pointer;color:var(--ink)}
+.opt:hover{border-style:solid;border-color:var(--teal);background:var(--teal-soft)}
+.opt.used{border-style:solid;border-color:var(--teal);color:var(--teal-dark)}
+.fin-days{font-size:13px;color:var(--muted);font-weight:400}
+.fin-tl{list-style:none;margin:4px 0 0;padding:0;font-size:13px;font-weight:400}
+.fin-tl li{display:flex;gap:8px;align-items:center}
+.prev-list{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
+.prev-list a{display:flex;flex-wrap:wrap;align-items:center;gap:10px;text-decoration:none;border:1px solid var(--line);border-radius:10px;padding:7px 12px}
+.prev-list a:hover{border-color:var(--teal);background:var(--teal-soft)}
