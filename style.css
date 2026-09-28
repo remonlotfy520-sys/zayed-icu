@@ -338,3 +338,22 @@ td.c-last{box-shadow:inset 0 -3px 0 var(--teal)}
 .search{border:1px solid var(--line);border-radius:8px;padding:7px 11px;min-width:240px}
 .au-d{margin:6px 0 0;font-size:13px;max-width:420px}
 details summary{cursor:pointer;color:var(--teal)}
+
+/* ---------- المرحلة 4 ---------- */
+.st-h{font-size:17px;margin:4px 0 10px}
+.bar-cell{display:flex;align-items:center;gap:8px;min-width:130px}
+.bar-cell .meter{flex:1;flex-basis:auto}
+.bar-cell span{min-width:44px;font-weight:600}
+tr.total td{font-weight:700;background:#F6F9F8}
+table.stats td,table.stats th{text-align:center}
+table.stats td:first-child,table.stats th:first-child{text-align:start}
+.fin{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.fin-item{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 16px;min-width:120px}
+.fin-item strong{display:block;font-size:22px;line-height:1.2}
+.fin-item small{color:var(--muted)}
+.st-note{font-size:13px;max-width:80ch}
+@media print{
+  .filters,.nav,.me,#stPrint,.file-actions,.ptabs{display:none !important}
+  .table-wrap{border:0;overflow:visible}
+  .page{max-width:none;padding:0}
+}
