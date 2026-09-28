@@ -6,7 +6,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where,
-  onSnapshot, runTransaction, writeBatch, serverTimestamp, Timestamp
+  onSnapshot, runTransaction, writeBatch, serverTimestamp, Timestamp, addDoc, deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, USER_EMAIL_DOMAIN } from "./firebase-config.js";
 
@@ -711,16 +711,162 @@ function openAdmissionDialog(unit, bed) {
 /* =========================================================
    ملف المريض
    ========================================================= */
+const HISTORY_FIELDS = [
+  ["complaint", "الشكوى الرئيسية"],
+  ["hpi", "تاريخ المرض الحالي"],
+  ["pmh", "الأمراض المزمنة"],
+  ["psh", "العمليات السابقة"],
+  ["drugs", "أدوية يتناولها قبل الدخول"],
+  ["allergy", "الحساسية"],
+  ["other", "ملاحظات أخرى"],
+];
+const DX_TYPES = { initial: "مبدئي", final: "نهائي", complication: "مضاعفات" };
+const INV_TYPES = { lab: "تحليل", radiology: "أشعة", other: "أخرى" };
+const ROUTES = ["IV", "IM", "SC", "Oral", "NG tube", "Inhalation", "Topical", "Rectal", "Other"];
+const FREQS = ["Once daily", "BID (q12h)", "TID (q8h)", "QID (q6h)", "q4h", "PRN", "STAT", "Continuous infusion"];
+const PTABS = [
+  ["info", "البيانات"],
+  ["history", "التاريخ والتشخيص"],
+  ["consult", "الإشراف المشترك"],
+  ["inv", "الأشعة والتحاليل"],
+  ["vitals", "العلامات الحيوية"],
+  ["meds", "العلاج"],
+];
+const BASE_VITALS = [
+  { key: "hr", label: "النبض", unit: "bpm" },
+  { key: "bp", label: "الضغط", unit: "mmHg" },
+  { key: "rr", label: "التنفس", unit: "/min" },
+  { key: "temp", label: "الحرارة", unit: "°C" },
+  { key: "spo2", label: "الأكسجين SpO2", unit: "%" },
+  { key: "rbs", label: "السكر", unit: "mg/dL" },
+  { key: "gcs", label: "GCS", unit: "" },
+  { key: "uop", label: "كمية البول", unit: "ml" },
+];
+function unitVitals(u) {
+  if (u?.vitals?.length) return u.vitals;
+  const extra = u?.id === "nicu"
+    ? [{ key: "weight", label: "الوزن", unit: "g" }, { key: "inctemp", label: "حرارة الحضانة", unit: "°C" }]
+    : u?.id === "burns" ? [{ key: "tbsa", label: "نسبة الحرق", unit: "%" }] : [];
+  return [...BASE_VITALS, ...extra];
+}
+
+const fmtTime = (d) => new Intl.DateTimeFormat(LOCALE, { hour: "numeric", minute: "2-digit" }).format(toDate(d));
+const fmtDayShort = (s) => new Intl.DateTimeFormat(LOCALE, { day: "2-digit", month: "2-digit" }).format(new Date(s + "T00:00:00"));
+const shiftName = (d) => { const h = toDate(d).getHours(); return h >= 9 && h < 21 ? "صباحي" : "مسائي"; };
+const pre = (s) => esc(s).replace(/\n/g, "<br>");
+const asc = (x, y) => toDate(x.at) - toDate(y.at);
+const desc = (x, y) => toDate(y.at) - toDate(x.at);
+function stayDayOn(admitAt, dayStr) {
+  const a = toDate(admitAt);
+  const a0 = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+  return Math.round((new Date(dayStr + "T00:00:00") - a0) / 86400000) + 1;
+}
+function dayRange(from, to) {
+  const out = [];
+  const d = new Date(from + "T00:00:00"), end = new Date(to + "T00:00:00");
+  while (d <= end) { out.push(isoDay(d)); d.setDate(d.getDate() + 1); }
+  return out;
+}
+const earliestDateStr = () => { const e = earliestEditable(); return e ? isoDay(e) : null; };
+
+function subRef(name, id) {
+  return id ? doc(db, "admissions", S.P.aid, name, id) : collection(db, "admissions", S.P.aid, name);
+}
+const meta = () => ({ createdBy: S.profile.uid, createdByName: S.profile.displayName, createdAt: serverTimestamp() });
+const upMeta = () => ({ updatedBy: S.profile.uid, updatedByName: S.profile.displayName, updatedAt: serverTimestamp() });
+
+function pCanAdd() {
+  const a = S.P.adm;
+  return canWriteUnit(a.unitId) && (isAdmin() || a.status === "active");
+}
+function pCanEdit(t) {
+  if (!pCanAdd()) return false;
+  if (isAdmin()) return true;
+  const d = toDate(t);
+  return !!d && d >= earliestEditable();
+}
+
+// خانة وقت مقيدة بفترة التعديل
+function timeInput(name, label, d = new Date()) {
+  const e = earliestEditable();
+  return `<label class="field"><span>${label}</span>
+    <input name="${name}" type="datetime-local" value="${toLocalInput(toDate(d))}" max="${toLocalInput(new Date())}" ${e ? `min="${toLocalInput(e)}"` : ""}>
+    ${e ? `<span class="hint">مسموح من ${fmtDateTime(e)}</span>` : ""}</label>`;
+}
+function readTime(input) {
+  const d = new Date(input.value);
+  if (!input.value || isNaN(d)) return [null, "حدد التاريخ والوقت."];
+  if (d > new Date(Date.now() + 5 * 60e3)) return [null, "الوقت لا يمكن أن يكون في المستقبل."];
+  const e = earliestEditable();
+  if (e && d < e) return [null, `مسموح من ${fmtDateTime(e)} فقط. لوقت أقدم كلّم الأدمن.`];
+  return [d, ""];
+}
+function dateInput(name, label, value, minStr) {
+  const e = earliestDateStr();
+  const min = [e, minStr].filter(Boolean).sort().pop();
+  return `<label class="field"><span>${label}</span>
+    <input name="${name}" type="date" value="${value}" max="${isoDay(new Date())}" ${min ? `min="${min}"` : ""}></label>`;
+}
+function readDate(input, minStr) {
+  const v = input.value;
+  if (!v) return [null, "حدد التاريخ."];
+  if (v > isoDay(new Date())) return [null, "التاريخ لا يمكن أن يكون في المستقبل."];
+  const e = earliestDateStr();
+  if (e && v < e) return [null, `مسموح من يوم ${fmtDate(e)} فقط. لتاريخ أقدم كلّم الأدمن.`];
+  if (minStr && v < minStr) return [null, `التاريخ لازم يكون من ${fmtDate(minStr)} أو بعده.`];
+  return [v, ""];
+}
+
+// نافذة نموذج عامة: onSave ترجع نص خطأ أو لا شيء
+function formDialog(title, fieldsHtml, submitLabel, onSave, onDelete) {
+  openDialog(`
+  <form class="form" id="gForm" novalidate>
+    <header class="dlg-head"><h3>${title}</h3></header>
+    ${fieldsHtml}
+    <div class="err" id="gErr"></div>
+    <div class="actions">
+      <button class="btn">${submitLabel}</button>
+      <button type="button" class="btn ghost" data-close>إلغاء</button>
+      ${onDelete ? `<button type="button" class="btn ghost del" id="gDel">حذف</button>` : ""}
+    </div>
+  </form>`);
+  const f = document.getElementById("gForm");
+  const err = document.getElementById("gErr");
+  f.onsubmit = async (ev) => {
+    ev.preventDefault();
+    err.textContent = "";
+    const btn = f.querySelector("button.btn");
+    btn.disabled = true;
+    try {
+      const r = await onSave(f);
+      if (r) { err.textContent = r; btn.disabled = false; return; }
+      closeDialog();
+    } catch (e) { err.textContent = errText(e); btn.disabled = false; }
+  };
+  if (onDelete) document.getElementById("gDel").onclick = async () => {
+    if (!confirm("حذف السجل ده نهائياً؟")) return;
+    try { await onDelete(); closeDialog(); toast("تم الحذف"); } catch (e) { err.textContent = errText(e); }
+  };
+  return f;
+}
+
 function renderPatient(aid) {
   shell(`<div class="loading">جاري تحميل ملف المريض…</div>`);
-  let adm = null, pat = null, patUnsub = null;
-  const draw = () => { if (adm && pat) drawPatient(adm, pat); };
+  const prevTab = S.P?.aid === aid ? S.P.tab : "info";
+  const P = (S.P = { aid, adm: null, pat: null, entries: [], vitals: [], meds: [], tab: prevTab, showHist: false, scroll: {}, subs: false });
+  const draw = () => { if (S.P === P && S.page === "patient" && P.adm && P.pat) drawPatient(); };
   S.pageUnsubs.push(onSnapshot(doc(db, "admissions", aid), (snap) => {
     if (!snap.exists()) { shell(`<div class="empty">الملف غير موجود. <a href="#/">ارجع للأسرّة</a></div>`); return; }
-    adm = { id: snap.id, ...snap.data() };
-    if (!patUnsub) {
-      patUnsub = onSnapshot(doc(db, "patients", adm.patientId), (ps) => { pat = ps.data() || {}; draw(); });
-      S.pageUnsubs.push(patUnsub);
+    P.adm = { id: snap.id, ...snap.data() };
+    if (!P.subs) {
+      P.subs = true;
+      S.pageUnsubs.push(onSnapshot(doc(db, "patients", P.adm.patientId), (ps) => { P.pat = ps.data() || {}; draw(); }));
+      for (const k of ["entries", "vitals", "meds"]) {
+        S.pageUnsubs.push(onSnapshot(collection(db, "admissions", aid, k), (s) => {
+          P[k] = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+          draw();
+        }, (e) => console.error(k, e)));
+      }
     }
     draw();
   }, () => {
@@ -728,22 +874,18 @@ function renderPatient(aid) {
   }));
 }
 
-function drawPatient(a, p) {
-  if (S.page !== "patient") return;
+function drawPatient() {
+  const P = S.P, a = P.adm, p = P.pat;
   const unit = unitById(a.unitId) || { name: a.unitId, bedLabel: "سرير" };
   const active = a.status === "active";
-  const canW = active && canWriteUnit(a.unitId);
-  const age = ageText(p.birthDate ?? a.birthDate, p.birthDateEstimated ?? a.birthDateEstimated);
+  const y = window.scrollY;
 
-  const idRows = p.idType === "newborn"
-    ? `<dt>اسم الأم</dt><dd>${esc(p.motherName)}</dd><dt>الرقم القومي للأم</dt><dd class="ltr">${esc(p.motherNationalId)}</dd>
-       <dt>تاريخ الولادة</dt><dd>${fmtDate(p.birthDate)}</dd>`
-    : p.idType === "unknown"
-      ? `<dt>الرقم القومي</dt><dd class="muted">غير معروف</dd>`
-      : `<dt>الرقم القومي</dt><dd class="ltr">${esc(p.nationalId)}</dd><dt>تاريخ الميلاد</dt><dd>${fmtDate(p.birthDate)}</dd>`;
+  const nConsult = P.entries.filter((e) => e.kind === "consult").length;
+  const nPending = P.entries.filter((e) => e.kind === "investigation" && !e.result).length;
+  const nMeds = P.meds.filter((m) => !m.stopDate).length;
+  const badge = { consult: nConsult, inv: nPending, meds: nMeds };
 
-  const visits = p.admissionsCount || 1;
-  const specs = (a.specialties || []).map((x) => `<span class="pill">${esc(x)}</span>`).join("") || `<span class="muted">لا يوجد</span>`;
+  const body = { info: ptInfo, history: ptHistory, consult: ptConsult, inv: ptInv, vitals: ptVitals, meds: ptMeds }[P.tab]();
 
   shell(`
   <div class="file-head">
@@ -752,9 +894,69 @@ function drawPatient(a, p) {
     <div class="tags">
       <span class="tag">${esc(unit.bedLabel)} ${a.bed}</span>
       ${active ? `<span class="tag day">اليوم ${dayOfStay(a.admitAt)} للإقامة</span>` : `<span class="tag archived">في الأرشيف</span>`}
+      ${a.consultant ? `<span class="tag">${esc(a.consultant)}</span>` : ""}
     </div>
   </div>
+  <nav class="ptabs" role="tablist">${PTABS.map(([k, t]) =>
+    `<button role="tab" aria-selected="${P.tab === k}" data-act="tab" data-tab="${k}" class="${P.tab === k ? "on" : ""}">${t}${badge[k] ? `<b>${badge[k]}</b>` : ""}</button>`).join("")}</nav>
+  <div class="ptab-body">${body}</div>
+  <datalist id="dlDrugs">${(S.settings.drugs || []).map((x) => `<option value="${esc(x)}">`).join("")}</datalist>
+  <datalist id="dlFreq">${FREQS.map((x) => `<option value="${esc(x)}">`).join("")}</datalist>`);
 
+  root.querySelector("main").onclick = onPatientClick;
+  root.querySelectorAll(".sheet[data-sheet]").forEach((el) => {
+    const k = el.dataset.sheet;
+    // الجدول بيفتح على آخر قراءة (أقصى الشمال في العربي)
+    el.scrollLeft = k in P.scroll ? P.scroll[k] : -(el.scrollWidth - el.clientWidth);
+    el.onscroll = () => (P.scroll[k] = el.scrollLeft);
+  });
+  window.scrollTo(0, y);
+}
+
+function onPatientClick(ev) {
+  const b = ev.target.closest("[data-act]");
+  if (!b) return;
+  const P = S.P, id = b.dataset.id;
+  const ent = () => P.entries.find((x) => x.id === id);
+  const med = () => P.meds.find((x) => x.id === id);
+  switch (b.dataset.act) {
+    case "tab": P.tab = b.dataset.tab; P.scroll = {}; drawPatient(); window.scrollTo(0, 0); break;
+    case "editBasic": openEditBasic(P.adm, P.pat); break;
+    case "editAdm": openEditAdmission(P.adm); break;
+    case "histEdit": openHistory(); break;
+    case "histToggle": P.showHist = !P.showHist; drawPatient(); break;
+    case "dxAdd": openDx(); break;
+    case "dxEdit": openDx(ent()); break;
+    case "cAdd": openConsult(); break;
+    case "cEdit": openConsult(ent()); break;
+    case "invAdd": openInv(); break;
+    case "invEdit": openInvEdit(ent()); break;
+    case "invResult": openInvResult(ent()); break;
+    case "vAdd": openVitals(); break;
+    case "vEdit": openVitals(P.vitals.find((x) => x.id === id)); break;
+    case "mAdd": openMed(); break;
+    case "mChange": openMedChange(med()); break;
+    case "mStop": openMedStop(med()); break;
+    case "mResume": resumeMed(med()); break;
+    case "mDel": deleteMed(med()); break;
+  }
+}
+
+/* ---------- البيانات ---------- */
+function ptInfo() {
+  const { adm: a, pat: p } = S.P;
+  const unit = unitById(a.unitId) || { name: a.unitId, bedLabel: "سرير" };
+  const canW = a.status === "active" && canWriteUnit(a.unitId);
+  const age = ageText(p.birthDate ?? a.birthDate, p.birthDateEstimated ?? a.birthDateEstimated);
+  const idRows = p.idType === "newborn"
+    ? `<dt>اسم الأم</dt><dd>${esc(p.motherName)}</dd><dt>الرقم القومي للأم</dt><dd class="ltr">${esc(p.motherNationalId)}</dd>
+       <dt>تاريخ الولادة</dt><dd>${fmtDate(p.birthDate)}</dd>`
+    : p.idType === "unknown"
+      ? `<dt>الرقم القومي</dt><dd class="muted">غير معروف</dd>`
+      : `<dt>الرقم القومي</dt><dd class="ltr">${esc(p.nationalId)}</dd><dt>تاريخ الميلاد</dt><dd>${fmtDate(p.birthDate)}</dd>`;
+  const visits = p.admissionsCount || 1;
+  const specs = (a.specialties || []).map((x) => `<span class="pill">${esc(x)}</span>`).join("") || `<span class="muted">لا يوجد</span>`;
+  return `
   <div class="file-grid">
     <section class="panel">
       <header><h2>البيانات الأساسية</h2>${canW ? `<button class="btn ghost sm" data-act="editBasic">تعديل</button>` : ""}</header>
@@ -771,7 +973,6 @@ function drawPatient(a, p) {
         <span>${visits > 1 ? `دخل الرعاية ${visits} مرات، وده الدخول رقم ${a.admissionNo || visits}` : "أول دخول للرعاية"}</span>
       </div>
     </section>
-
     <section class="panel">
       <header><h2>بيانات الدخول</h2>${canW ? `<button class="btn ghost sm" data-act="editAdm">تعديل</button>` : ""}</header>
       <dl class="kv">
@@ -783,20 +984,390 @@ function drawPatient(a, p) {
         <dt>سجّل الدخول</dt><dd>${esc(a.createdByName)}</dd>
       </dl>
     </section>
-  </div>
-
-  <section class="panel">
-    <header><h2>ملف المتابعة</h2></header>
-    <p class="muted" style="margin:0">الأقسام دي هتتضاف في المرحلة الثانية:</p>
-    <ul class="soon">
-      <li>التاريخ المرضي</li><li>التشخيص</li><li>الإشراف المشترك ورأي التخصصات</li>
-      <li>الأشعة والتحاليل</li><li>العلامات الحيوية وتطور الحالة</li><li>العلاج اليومي</li>
-    </ul>
-  </section>`);
-
-  root.querySelector('[data-act="editBasic"]')?.addEventListener("click", () => openEditBasic(a, p));
-  root.querySelector('[data-act="editAdm"]')?.addEventListener("click", () => openEditAdmission(a));
+  </div>`;
 }
+
+/* ---------- التاريخ المرضي والتشخيص ---------- */
+function ptHistory() {
+  const P = S.P;
+  const hs = P.entries.filter((e) => e.kind === "history").sort(desc);
+  const cur = hs[0];
+  const add = pCanAdd();
+  const histBody = cur
+    ? `<dl class="kv">${HISTORY_FIELDS.filter(([k]) => cur[k]).map(([k, l]) => `<dt>${l}</dt><dd>${pre(cur[k])}</dd>`).join("")}</dl>
+       <p class="by-line">آخر تحديث: ${esc(cur.createdByName)}، ${fmtDateTime(cur.at)}</p>
+       ${hs.length > 1 ? `<button class="linkbtn" data-act="histToggle">${P.showHist ? "إخفاء" : "عرض"} النسخ السابقة (${hs.length - 1})</button>` : ""}
+       ${P.showHist ? `<div class="old-versions">${hs.slice(1).map((h) => `
+         <div class="old"><p class="by-line">${esc(h.createdByName)}، ${fmtDateTime(h.at)}</p>
+         <dl class="kv">${HISTORY_FIELDS.filter(([k]) => h[k]).map(([k, l]) => `<dt>${l}</dt><dd>${pre(h[k])}</dd>`).join("")}</dl></div>`).join("")}</div>` : ""}`
+    : `<p class="muted">لم يُسجل التاريخ المرضي بعد.</p>`;
+
+  const dx = P.entries.filter((e) => e.kind === "diagnosis").sort(desc);
+  const dxBody = dx.length
+    ? `<ul class="entries">${dx.map((e) => `
+        <li>
+          <div class="entry-head"><span class="pill t-${e.dxType}">${DX_TYPES[e.dxType] || ""}</span>
+            <span class="by-line">${esc(e.createdByName)}، ${fmtDateTime(e.at)}</span>
+            ${pCanEdit(e.at) ? `<button class="btn ghost sm" data-act="dxEdit" data-id="${e.id}">تعديل</button>` : ""}</div>
+          <p>${pre(e.text)}</p>
+        </li>`).join("")}</ul>`
+    : `<p class="muted">لم يُسجل تشخيص بعد.</p>`;
+
+  return `
+  <div class="file-grid">
+    <section class="panel">
+      <header><h2>التاريخ المرضي</h2>${add ? `<button class="btn ghost sm" data-act="histEdit">${cur ? "تحديث" : "تسجيل"}</button>` : ""}</header>
+      ${histBody}
+    </section>
+    <section class="panel">
+      <header><h2>التشخيص</h2>${add ? `<button class="btn ghost sm" data-act="dxAdd">إضافة تشخيص</button>` : ""}</header>
+      ${dxBody}
+    </section>
+  </div>`;
+}
+
+function openHistory() {
+  const cur = S.P.entries.filter((e) => e.kind === "history").sort(desc)[0];
+  formDialog("التاريخ المرضي",
+    HISTORY_FIELDS.map(([k, l]) => `<label class="field"><span>${l}</span><textarea name="${k}" rows="${k === "hpi" ? 4 : 2}">${esc(cur?.[k] || "")}</textarea></label>`).join("")
+    + (cur ? `<p class="hint">الحفظ بيعمل نسخة جديدة، والنسخة الحالية بتفضل محفوظة في السجل.</p>` : ""),
+    "حفظ التاريخ المرضي",
+    async (f) => {
+      const data = {};
+      HISTORY_FIELDS.forEach(([k]) => (data[k] = f.elements[k].value.trim()));
+      if (!Object.values(data).some(Boolean)) return "اكتب بيانات في خانة واحدة على الأقل.";
+      await addDoc(subRef("entries"), { kind: "history", ...data, at: Timestamp.now(), ...meta() });
+      toast("تم حفظ التاريخ المرضي");
+    });
+}
+
+function openDx(e) {
+  const t = e?.dxType || "initial";
+  formDialog(e ? "تعديل التشخيص" : "إضافة تشخيص", `
+    <fieldset class="seg">${Object.entries(DX_TYPES).map(([k, l]) =>
+      `<label><input type="radio" name="dxType" value="${k}" ${k === t ? "checked" : ""}> ${l}</label>`).join("")}</fieldset>
+    <label class="field"><span>التشخيص</span><textarea name="text" rows="3" class="ltr-auto">${esc(e?.text || "")}</textarea></label>
+    ${timeInput("at", "الوقت", e?.at || new Date())}`,
+    e ? "حفظ التعديل" : "إضافة التشخيص",
+    async (f) => {
+      const text = f.elements.text.value.trim();
+      if (!text) return "اكتب التشخيص.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      const data = { kind: "diagnosis", dxType: f.querySelector('input[name="dxType"]:checked').value, text, at: Timestamp.fromDate(at) };
+      if (e) await updateDoc(subRef("entries", e.id), { ...data, ...upMeta() });
+      else await addDoc(subRef("entries"), { ...data, ...meta() });
+      toast(e ? "تم حفظ التعديل" : "تمت إضافة التشخيص");
+    },
+    e ? () => deleteDoc(subRef("entries", e.id)) : null);
+}
+
+/* ---------- الإشراف المشترك ---------- */
+function ptConsult() {
+  const list = S.P.entries.filter((e) => e.kind === "consult").sort(desc);
+  return `
+  <section class="panel">
+    <header><h2>الإشراف المشترك ورأي التخصصات</h2>${pCanAdd() ? `<button class="btn ghost sm" data-act="cAdd">إضافة رأي</button>` : ""}</header>
+    ${list.length ? `<ul class="entries">${list.map((e) => `
+      <li>
+        <div class="entry-head"><span class="pill">${esc(e.specialty)}</span>
+          ${e.doctor ? `<strong>${esc(e.doctor)}</strong>` : ""}
+          <span class="by-line">${fmtDateTime(e.at)}، سجّله ${esc(e.createdByName)}</span>
+          ${pCanEdit(e.at) ? `<button class="btn ghost sm" data-act="cEdit" data-id="${e.id}">تعديل</button>` : ""}</div>
+        <p>${pre(e.opinion)}</p>
+      </li>`).join("")}</ul>` : `<p class="muted">لا يوجد آراء مسجلة.</p>`}
+  </section>`;
+}
+
+function openConsult(e) {
+  const specs = [...new Set([...(S.P.adm.specialties || []), ...(S.settings.specialties || [])])];
+  formDialog(e ? "تعديل الرأي" : "إضافة رأي تخصص", `
+    <div class="row2">
+      <label class="field"><span>التخصص</span><select name="specialty">${optionsHtml(specs, e?.specialty || "")}</select></label>
+      <label class="field"><span>اسم الطبيب</span><input name="doctor" value="${esc(e?.doctor || "")}"></label>
+    </div>
+    <label class="field"><span>الرأي والتوصيات</span><textarea name="opinion" rows="5">${esc(e?.opinion || "")}</textarea></label>
+    ${timeInput("at", "الوقت", e?.at || new Date())}`,
+    e ? "حفظ التعديل" : "إضافة الرأي",
+    async (f) => {
+      const specialty = f.elements.specialty.value, opinion = f.elements.opinion.value.trim();
+      if (!specialty) return "اختر التخصص.";
+      if (!opinion) return "اكتب الرأي.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      const data = { kind: "consult", specialty, doctor: f.elements.doctor.value.trim(), opinion, at: Timestamp.fromDate(at) };
+      if (e) await updateDoc(subRef("entries", e.id), { ...data, ...upMeta() });
+      else await addDoc(subRef("entries"), { ...data, ...meta() });
+      toast(e ? "تم حفظ التعديل" : "تمت إضافة الرأي");
+    },
+    e ? () => deleteDoc(subRef("entries", e.id)) : null);
+}
+
+/* ---------- الأشعة والتحاليل ---------- */
+function ptInv() {
+  const list = S.P.entries.filter((e) => e.kind === "investigation").sort(desc);
+  const add = pCanAdd();
+  return `
+  <div class="toolbar"><h2>الأشعة والتحاليل</h2>${add ? `<button class="btn" data-act="invAdd">طلب جديد</button>` : ""}</div>
+  ${list.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>وقت الطلب</th><th>النوع</th><th>الطلب</th><th>النتيجة</th><th></th></tr></thead>
+    <tbody>${list.map((e) => {
+      const resEditable = add && (!e.resultAt || pCanEdit(e.resultAt));
+      return `<tr class="${e.result ? "" : "pending"}">
+        <td>${fmtDateTime(e.at)}<div class="by-line">${esc(e.createdByName)}</div></td>
+        <td>${INV_TYPES[e.invType] || ""}</td>
+        <td class="ltr-auto"><strong>${esc(e.name)}</strong></td>
+        <td>${e.result
+          ? `<div class="ltr-auto">${pre(e.result)}</div><div class="by-line">${fmtDateTime(e.resultAt)}، ${esc(e.resultByName || "")}</div>`
+          : `<span class="wait">منتظر النتيجة</span>`}</td>
+        <td class="nowrap">
+          ${resEditable ? `<button class="btn ghost sm" data-act="invResult" data-id="${e.id}">${e.result ? "تعديل النتيجة" : "إضافة النتيجة"}</button>` : ""}
+          ${pCanEdit(e.at) ? `<button class="btn ghost sm" data-act="invEdit" data-id="${e.id}">تعديل الطلب</button>` : ""}
+        </td></tr>`;
+    }).join("")}</tbody></table></div>` : `<div class="empty">لا يوجد طلبات أشعة أو تحاليل.</div>`}`;
+}
+
+function openInv() {
+  const common = S.settings.investigations || [];
+  formDialog("طلب أشعة أو تحاليل", `
+    <fieldset class="seg">${Object.entries(INV_TYPES).map(([k, l], i) =>
+      `<label><input type="radio" name="invType" value="${k}" ${i === 0 ? "checked" : ""}> ${l}</label>`).join("")}</fieldset>
+    ${common.length ? `<div class="field"><span>من القائمة</span>${checksHtml("pick", common)}</div>` : ""}
+    <label class="field"><span>${common.length ? "طلبات أخرى" : "الطلبات"}</span>
+      <textarea name="others" rows="2" class="ltr-auto" placeholder="كل طلب في سطر، أو افصل بينهم بفاصلة"></textarea></label>
+    ${timeInput("at", "وقت الطلب")}`,
+    "حفظ الطلبات",
+    async (f) => {
+      const names = [...checkedValues(f, "pick"), ...f.elements.others.value.split(/[\n,،]+/).map((s) => s.trim()).filter(Boolean)];
+      if (!names.length) return "اختر أو اكتب طلباً واحداً على الأقل.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      const invType = f.querySelector('input[name="invType"]:checked').value;
+      const b = writeBatch(db);
+      names.forEach((name) => b.set(doc(subRef("entries")), {
+        kind: "investigation", invType, name, at: Timestamp.fromDate(at),
+        result: "", resultAt: null, ...meta(),
+      }));
+      await b.commit();
+      toast(names.length > 1 ? `تم حفظ ${names.length} طلبات` : "تم حفظ الطلب");
+    });
+}
+
+function openInvEdit(e) {
+  formDialog("تعديل الطلب", `
+    <fieldset class="seg">${Object.entries(INV_TYPES).map(([k, l]) =>
+      `<label><input type="radio" name="invType" value="${k}" ${k === e.invType ? "checked" : ""}> ${l}</label>`).join("")}</fieldset>
+    <label class="field"><span>الطلب</span><input name="invName" class="ltr-auto" value="${esc(e.name)}"></label>
+    ${timeInput("at", "وقت الطلب", e.at)}`,
+    "حفظ التعديل",
+    async (f) => {
+      const name = f.elements.invName.value.trim();
+      if (!name) return "اكتب اسم الطلب.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      await updateDoc(subRef("entries", e.id), { name, invType: f.querySelector('input[name="invType"]:checked').value,
+        at: Timestamp.fromDate(at), ...upMeta() });
+      toast("تم حفظ التعديل");
+    },
+    () => deleteDoc(subRef("entries", e.id)));
+}
+
+function openInvResult(e) {
+  formDialog(`نتيجة: ${esc(e.name)}`, `
+    <label class="field"><span>النتيجة</span><textarea name="result" rows="4" class="ltr-auto">${esc(e.result || "")}</textarea></label>
+    ${timeInput("resultAt", "وقت النتيجة", e.resultAt || new Date())}`,
+    "حفظ النتيجة",
+    async (f) => {
+      const result = f.elements.result.value.trim();
+      if (!result) return "اكتب النتيجة.";
+      const [at, er] = readTime(f.elements.resultAt); if (er) return er;
+      await updateDoc(subRef("entries", e.id), { result, resultAt: Timestamp.fromDate(at),
+        resultBy: S.profile.uid, resultByName: S.profile.displayName });
+      toast("تم حفظ النتيجة");
+    });
+}
+
+/* ---------- العلامات الحيوية وتطور الحالة ---------- */
+function ptVitals() {
+  const P = S.P, a = P.adm;
+  const fields = unitVitals(unitById(a.unitId));
+  const rs = [...P.vitals].sort(asc);
+  const head = `<div class="toolbar"><h2>العلامات الحيوية وتطور الحالة</h2>${pCanAdd() ? `<button class="btn" data-act="vAdd">إضافة قراءة</button>` : ""}</div>`;
+  if (!rs.length) return head + `<div class="empty">لا يوجد قراءات مسجلة. كل قراءة بتظهر كعمود بتاريخها ووقتها.</div>`;
+
+  const groups = [];
+  rs.forEach((r) => {
+    const d = isoDay(toDate(r.at));
+    if (groups.length && groups[groups.length - 1].day === d) groups[groups.length - 1].n++;
+    else groups.push({ day: d, n: 1 });
+  });
+  const colHead = (r) => pCanEdit(r.at)
+    ? `<button class="col-btn" data-act="vEdit" data-id="${r.id}" title="تعديل القراءة">${fmtTime(r.at)}<small>${shiftName(r.at)}</small></button>`
+    : `${fmtTime(r.at)}<small>${shiftName(r.at)}</small>`;
+  return head + `
+  <div class="table-wrap sheet" data-sheet="vitals"><table class="grid">
+    <thead>
+      <tr><th class="stick" rowspan="2">العلامة</th>${groups.map((g) =>
+        `<th colspan="${g.n}" class="day-h">${fmtDate(g.day)}<small>اليوم ${stayDayOn(a.admitAt, g.day)}</small></th>`).join("")}</tr>
+      <tr>${rs.map((r) => `<th class="rd-h">${colHead(r)}</th>`).join("")}</tr>
+    </thead>
+    <tbody>
+      ${fields.map((f) => `<tr><th class="stick">${esc(f.label)}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}</th>
+        ${rs.map((r) => `<td class="v">${esc(r.values?.[f.key] ?? "")}</td>`).join("")}</tr>`).join("")}
+      <tr class="note-row"><th class="stick">تطور الحالة</th>${rs.map((r) => `<td class="note ltr-auto">${pre(r.note || "")}</td>`).join("")}</tr>
+      <tr class="by-row"><th class="stick">سجّل</th>${rs.map((r) => `<td>${esc(r.createdByName)}</td>`).join("")}</tr>
+    </tbody>
+  </table></div>`;
+}
+
+function openVitals(r) {
+  const fields = unitVitals(unitById(S.P.adm.unitId));
+  formDialog(r ? "تعديل القراءة" : "إضافة قراءة", `
+    ${timeInput("at", "وقت القراءة", r?.at || new Date())}
+    <div class="vgrid">${fields.map((f) => `<label class="field"><span>${esc(f.label)}${f.unit ? ` (${esc(f.unit)})` : ""}</span>
+      <input name="v_${f.key}" class="ltr" value="${esc(r?.values?.[f.key] ?? "")}" autocomplete="off"></label>`).join("")}</div>
+    <label class="field"><span>تطور الحالة</span><textarea name="note" rows="4" class="ltr-auto">${esc(r?.note || "")}</textarea></label>`,
+    r ? "حفظ التعديل" : "حفظ القراءة",
+    async (f) => {
+      const values = {};
+      fields.forEach((x) => { const v = f.elements["v_" + x.key].value.trim(); if (v) values[x.key] = v; });
+      const note = f.elements.note.value.trim();
+      if (!Object.keys(values).length && !note) return "سجّل علامة واحدة على الأقل أو تطور الحالة.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      if (r) await updateDoc(subRef("vitals", r.id), { values: { ...Object.fromEntries(Object.entries(r.values || {}).filter(([k]) => !fields.some((f) => f.key === k))), ...values }, note, at: Timestamp.fromDate(at), ...upMeta() });
+      else await addDoc(subRef("vitals"), { values, note, at: Timestamp.fromDate(at), ...meta() });
+      toast(r ? "تم حفظ التعديل" : "تم حفظ القراءة");
+    },
+    r ? () => deleteDoc(subRef("vitals", r.id)) : null);
+}
+
+/* ---------- العلاج ---------- */
+const sortedDoses = (m) => [...(m.doses || [])].sort((x, y) => x.from.localeCompare(y.from));
+const currentDose = (m) => sortedDoses(m).pop() || {};
+
+function ptMeds() {
+  const P = S.P, a = P.adm;
+  const add = pCanAdd();
+  const minEdit = earliestDateStr();
+  const head = `<div class="toolbar"><h2>العلاج اليومي</h2>${add ? `<button class="btn" data-act="mAdd">إضافة علاج</button>` : ""}</div>`;
+  if (!P.meds.length) return head + `<div class="empty">لا يوجد علاج مسجل. العلاج بيفضل مستمر كل يوم لحد ما يتوقف.</div>`;
+
+  const days = dayRange(isoDay(toDate(a.admitAt)), isoDay(new Date()));
+  const meds = [...P.meds].sort((x, y) => (x.stopDate ? 1 : 0) - (y.stopDate ? 1 : 0) || x.startDate.localeCompare(y.startDate));
+  const cell = (m, day) => {
+    if (day < m.startDate || (m.stopDate && day > m.stopDate)) return `<td></td>`;
+    if (m.stopDate === day) return `<td class="c-stop">أوقف</td>`;
+    const d = sortedDoses(m).filter((x) => x.from <= day).pop();
+    if (!d) return `<td></td>`;
+    const changed = d.from === day && day !== m.startDate;
+    return `<td class="c-on ${changed ? "c-chg" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small></td>`;
+  };
+  const acts = (m) => {
+    if (!add) return "";
+    const b = [];
+    if (!m.stopDate) b.push(`<button class="linkbtn" data-act="mChange" data-id="${m.id}">تغيير الجرعة</button>`,
+      `<button class="linkbtn" data-act="mStop" data-id="${m.id}">إيقاف</button>`);
+    else if (isAdmin() || (minEdit && m.stopDate >= minEdit)) b.push(`<button class="linkbtn" data-act="mResume" data-id="${m.id}">إلغاء الإيقاف</button>`);
+    if (pCanEdit(m.enteredAt)) b.push(`<button class="linkbtn del" data-act="mDel" data-id="${m.id}">حذف</button>`);
+    return `<span class="row-acts">${b.join("")}</span>`;
+  };
+  return head + `
+  <div class="table-wrap sheet" data-sheet="meds"><table class="grid meds">
+    <thead><tr><th class="stick">الدواء</th>${days.map((d) =>
+      `<th class="day-h">${fmtDayShort(d)}<small>اليوم ${stayDayOn(a.admitAt, d)}</small></th>`).join("")}</tr></thead>
+    <tbody>${meds.map((m) => {
+      const cd = currentDose(m);
+      return `<tr class="${m.stopDate ? "stopped" : ""}">
+        <th class="stick med-h">
+          <strong class="ltr-auto">${esc(m.name)}</strong>
+          <span>${esc(m.route)}${cd.frequency ? `، ${esc(cd.frequency)}` : ""}</span>
+          <span class="status">${m.stopDate ? `متوقف ${fmtDate(m.stopDate)}` : `مستمر من ${fmtDate(m.startDate)}`}</span>
+          ${m.note ? `<span class="muted">${esc(m.note)}</span>` : ""}
+          ${acts(m)}
+        </th>${days.map((d) => cell(m, d)).join("")}</tr>`;
+    }).join("")}</tbody>
+  </table></div>`;
+}
+
+function openMed() {
+  const today = isoDay(new Date());
+  formDialog("إضافة علاج", `
+    <label class="field"><span>اسم الدواء</span><input name="medName" list="dlDrugs" class="ltr" autocomplete="off"></label>
+    <div class="row2">
+      <label class="field"><span>الجرعة</span><input name="dose" class="ltr" placeholder="1 g"></label>
+      <label class="field"><span>طريقة الإعطاء</span><select name="route">${optionsHtml(ROUTES, "")}</select></label>
+    </div>
+    <div class="row2">
+      <label class="field"><span>عدد المرات</span><input name="frequency" list="dlFreq" class="ltr" autocomplete="off"></label>
+      ${dateInput("startDate", "يبدأ من يوم", today, isoDay(toDate(S.P.adm.admitAt)))}
+    </div>
+    <label class="field"><span>ملاحظة (اختياري)</span><input name="note"></label>`,
+    "إضافة العلاج",
+    async (f) => {
+      const name = f.elements.medName.value.trim(), dose = f.elements.dose.value.trim();
+      const route = f.elements.route.value, frequency = f.elements.frequency.value.trim();
+      if (!name) return "اكتب اسم الدواء.";
+      if (!dose) return "اكتب الجرعة.";
+      if (!route) return "اختر طريقة الإعطاء.";
+      if (!frequency) return "اكتب عدد المرات.";
+      const [start, er] = readDate(f.elements.startDate, isoDay(toDate(S.P.adm.admitAt))); if (er) return er;
+      const now = Timestamp.now();
+      await addDoc(subRef("meds"), {
+        name, route, note: f.elements.note.value.trim(), startDate: start, stopDate: null,
+        doses: [{ dose, frequency, from: start, byName: S.profile.displayName }],
+        at: now, enteredAt: now, ...meta(),
+      });
+      toast("تمت إضافة العلاج");
+    });
+}
+
+function openMedChange(m) {
+  const cd = currentDose(m);
+  const minStr = [m.startDate, earliestDateStr()].filter(Boolean).sort().pop();
+  formDialog(`تغيير جرعة ${esc(m.name)}`, `
+    <div class="row2">
+      <label class="field"><span>الجرعة الجديدة</span><input name="dose" class="ltr" value="${esc(cd.dose || "")}"></label>
+      <label class="field"><span>عدد المرات</span><input name="frequency" list="dlFreq" class="ltr" value="${esc(cd.frequency || "")}" autocomplete="off"></label>
+    </div>
+    ${dateInput("from", "من يوم", isoDay(new Date()), minStr)}
+    <p class="hint">الجرعة القديمة بتفضل ظاهرة في الأيام اللي قبل كده.</p>`,
+    "حفظ الجرعة",
+    async (f) => {
+      const dose = f.elements.dose.value.trim(), frequency = f.elements.frequency.value.trim();
+      if (!dose || !frequency) return "اكتب الجرعة وعدد المرات.";
+      const [from, er] = readDate(f.elements.from, m.startDate); if (er) return er;
+      if (!isAdmin() && sortedDoses(m).some((x) => x.from > from)) return "فيه تغيير جرعة مسجل بعد التاريخ ده.";
+      const doses = sortedDoses(m).filter((x) => x.from !== from);
+      doses.push({ dose, frequency, from, byName: S.profile.displayName });
+      await updateDoc(subRef("meds", m.id), { doses, at: Timestamp.now(), ...upMeta() });
+      toast("تم حفظ الجرعة الجديدة");
+    });
+}
+
+function openMedStop(m) {
+  const minStr = [m.startDate, earliestDateStr()].filter(Boolean).sort().pop();
+  formDialog(`إيقاف ${esc(m.name)}`, `
+    ${dateInput("stopDate", "تاريخ الإيقاف", isoDay(new Date()), minStr)}
+    <label class="field"><span>السبب (اختياري)</span><input name="reason"></label>`,
+    "إيقاف العلاج",
+    async (f) => {
+      const [d, er] = readDate(f.elements.stopDate, m.startDate); if (er) return er;
+      await updateDoc(subRef("meds", m.id), { stopDate: d, stopReason: f.elements.reason.value.trim(),
+        stoppedByName: S.profile.displayName, at: Timestamp.now(), ...upMeta() });
+      toast("تم إيقاف العلاج");
+    });
+}
+
+async function resumeMed(m) {
+  if (!confirm(`إلغاء إيقاف ${m.name}؟ العلاج هيرجع مستمر.`)) return;
+  try {
+    await updateDoc(subRef("meds", m.id), { stopDate: null, stopReason: "", at: Timestamp.now(), ...upMeta() });
+    toast("تم إلغاء الإيقاف");
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function deleteMed(m) {
+  if (!confirm(`حذف ${m.name} نهائياً من جدول العلاج؟ استخدم الحذف للأخطاء فقط، وللإيقاف استخدم "إيقاف".`)) return;
+  try { await deleteDoc(subRef("meds", m.id)); toast("تم الحذف"); } catch (e) { toast(errText(e), true); }
+}
+
+/* ---------- تعديل البيانات الأساسية وبيانات الدخول ---------- */
 
 function openEditBasic(a, p) {
   const nb = p.idType === "newborn";
@@ -870,11 +1441,11 @@ function openEditAdmission(a) {
    الإعدادات (أدمن)
    ========================================================= */
 function renderSettings(tab) {
-  const tabs = [["users", "المستخدمين"], ["units", "الوحدات والأسرّة"], ["lists", "الاستشاريين والتخصصات"], ["hospital", "بيانات المستشفى"]];
+  const tabs = [["users", "المستخدمين"], ["units", "الوحدات والأسرّة"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["hospital", "بيانات المستشفى"]];
   const nav = `<nav class="tabs">${tabs.map(([k, t]) => `<a href="#/settings/${k}" class="${tab === k ? "on" : ""}">${t}</a>`).join("")}</nav>`;
   shell(nav + `<div id="tabBody"><div class="loading">جاري التحميل…</div></div>`);
   const body = document.getElementById("tabBody");
-  ({ users: tabUsers, units: tabUnits, lists: tabLists, hospital: tabHospital }[tab] || tabUsers)(body);
+  ({ users: tabUsers, units: tabUnits, vitals: tabVitalFields, lists: tabLists, hospital: tabHospital }[tab] || tabUsers)(body);
 }
 
 /* ---------- المستخدمين ---------- */
@@ -1025,6 +1596,49 @@ function tabUnits(body) {
   draw();
 }
 
+
+/* ---------- خانات العلامات الحيوية ---------- */
+function tabVitalFields(body, unitId) {
+  const list = units();
+  const u = list.find((x) => x.id === unitId) || list[0];
+  if (!u) { body.innerHTML = `<div class="empty">لا يوجد وحدات.</div>`; return; }
+  let rows = unitVitals(u).map((f) => ({ ...f }));
+  const draw = () => {
+    body.innerHTML = `
+    <div class="unit-bar">${list.map((x) => `<button class="chip ${x.id === u.id ? "on" : ""}" data-unit="${x.id}">${esc(x.name)}</button>`).join("")}</div>
+    <div class="toolbar"><h2>خانات العلامات الحيوية: ${esc(u.name)}</h2><button class="btn ghost" id="addField">إضافة خانة</button></div>
+    <div class="table-wrap"><table class="units-edit">
+      <thead><tr><th>الخانة</th><th>الوحدة (Unit)</th><th>الترتيب</th><th></th></tr></thead>
+      <tbody>${rows.map((f, i) => `<tr>
+        <td><input data-i="${i}" data-k="label" value="${esc(f.label)}"></td>
+        <td><input data-i="${i}" data-k="unit" value="${esc(f.unit)}" class="ltr" style="width:110px"></td>
+        <td class="nowrap"><button class="btn ghost sm" data-up="${i}" ${i === 0 ? "disabled" : ""} aria-label="لفوق">▲</button>
+          <button class="btn ghost sm" data-down="${i}" ${i === rows.length - 1 ? "disabled" : ""} aria-label="لتحت">▼</button></td>
+        <td><button class="btn ghost sm" data-del="${i}">حذف</button></td></tr>`).join("")}</tbody>
+    </table></div>
+    <p class="muted">حذف خانة بيخفيها من الجدول بس، والقراءات القديمة بتفضل محفوظة. الخانات دي خاصة بالوحدة دي لوحدها.</p>
+    <div class="err" id="vfErr"></div>
+    <div class="actions"><button class="btn" id="saveFields">حفظ الخانات</button></div>`;
+    body.querySelectorAll("[data-unit]").forEach((b) => (b.onclick = () => tabVitalFields(body, b.dataset.unit)));
+    body.querySelectorAll("[data-k]").forEach((el) => (el.oninput = () => (rows[el.dataset.i][el.dataset.k] = el.value)));
+    const move = (i, j) => { [rows[i], rows[j]] = [rows[j], rows[i]]; draw(); };
+    body.querySelectorAll("[data-up]").forEach((b) => (b.onclick = () => move(+b.dataset.up, +b.dataset.up - 1)));
+    body.querySelectorAll("[data-down]").forEach((b) => (b.onclick = () => move(+b.dataset.down, +b.dataset.down + 1)));
+    body.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { rows.splice(+b.dataset.del, 1); draw(); }));
+    document.getElementById("addField").onclick = () => { rows.push({ key: "f" + Date.now().toString(36), label: "", unit: "" }); draw(); };
+    document.getElementById("saveFields").onclick = async () => {
+      const err = document.getElementById("vfErr");
+      rows = rows.map((f) => ({ key: f.key, label: String(f.label || "").trim(), unit: String(f.unit || "").trim() }));
+      if (!rows.length) { err.textContent = "لازم خانة واحدة على الأقل."; return; }
+      if (rows.some((f) => !f.label)) { err.textContent = "كل خانة لازم يكون ليها اسم."; return; }
+      const updated = units().map((x) => (x.id === u.id ? { ...x, vitals: rows } : x));
+      try { await updateDoc(doc(db, "config", "settings"), { units: updated }); toast("تم حفظ الخانات"); }
+      catch (e) { err.textContent = errText(e); }
+    };
+  };
+  draw();
+}
+
 /* ---------- القوائم ---------- */
 function tabLists(body) {
   const block = (key, title, ph) => `
@@ -1037,7 +1651,10 @@ function tabLists(body) {
           || `<span class="muted" style="border:0;background:none">القائمة فاضية</span>`}</div>
       </div>
     </div>`;
-  body.innerHTML = block("consultants", "الاستشاريين", "مثال: د. أحمد محمود") + block("specialties", "التخصصات المشتركة", "مثال: باطنة");
+  body.innerHTML = block("consultants", "الاستشاريين", "مثال: د. أحمد محمود")
+    + block("specialties", "التخصصات المشتركة", "مثال: باطنة")
+    + block("investigations", "التحاليل والأشعة الشائعة", "مثال: CBC")
+    + block("drugs", "الأدوية الشائعة", "مثال: Ceftriaxone");
   const save = async (key, arr) => {
     try { await updateDoc(doc(db, "config", "settings"), { [key]: arr }); tabLists(body); }
     catch (e) { toast(errText(e), true); }
