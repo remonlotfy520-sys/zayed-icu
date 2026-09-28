@@ -430,3 +430,12 @@ tr.day-row td{background:#F6F9F8;font-weight:700}
 .bed.occ.ward.rf{background:#8E2A2A}
 .bed.occ.ward .bed-no,.bed.occ.ward .bed-day small{color:#C9DCEB}
 @media (max-width:760px){.nav{overflow-x:auto}}
+
+/* ---------- المرحلة 5ج ---------- */
+.st-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin-bottom:22px}
+.st-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.st-card h4{margin:0 0 6px;font-size:14.5px}
+.st-card table{font-size:14px}
+.st-card td{padding:4px 0;border-bottom:1px dashed var(--line)}
+.st-card tr:last-child td{border-bottom:0}
+.st-card td.num{text-align:end;font-weight:700;width:48px}
