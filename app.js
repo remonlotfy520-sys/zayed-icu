@@ -280,6 +280,9 @@ function route() {
   } else if (page === "patient" && parts[1]) {
     S.page = "patient";
     renderPatient(parts[1]);
+  } else if (page === "stats" && isAdmin()) {
+    S.page = "stats";
+    renderStats();
   } else if (page === "archive" && isAdmin()) {
     S.page = "archive";
     renderArchive();
@@ -302,6 +305,7 @@ function shell(inner) {
     <nav class="nav">
       <a href="#/" class="${S.page === "dashboard" ? "on" : ""}">الأسرّة</a>
       ${isAdmin() ? `<a href="#/archive" class="${S.page === "archive" ? "on" : ""}">الأرشيف</a>
+      <a href="#/stats" class="${S.page === "stats" ? "on" : ""}">الإحصائيات</a>
       <a href="#/settings" class="${S.page === "settings" ? "on" : ""}">الإعدادات</a>` : ""}
     </nav>
     <div class="me">
@@ -923,9 +927,10 @@ function drawPatient() {
       ${active ? `<span class="tag day">اليوم ${stayDays(a)} للإقامة</span>` : `<span class="tag archived">في الأرشيف: ${DIS_TYPES[a.dischargeType] || "خرج"}</span>`}
       ${a.consultant ? `<span class="tag">${esc(a.consultant)}</span>` : ""}
     </div>
-    ${active && canWriteUnit(a.unitId) ? `<div class="file-actions">
-      <button class="btn ghost" data-act="transfer">نقل</button>
-      <button class="btn danger" data-act="discharge">خروج</button></div>` : ""}
+    ${(active && canWriteUnit(a.unitId)) || isAdmin() ? `<div class="file-actions">
+      ${active && canWriteUnit(a.unitId) ? `<button class="btn ghost" data-act="transfer">نقل</button>
+      <button class="btn danger" data-act="discharge">خروج</button>` : ""}
+      ${isAdmin() ? `<button class="btn ghost" data-act="print">طباعة / PDF</button>` : ""}</div>` : ""}
   </div>
   <nav class="ptabs" role="tablist">${PTABS.map(([k, t]) =>
     `<button role="tab" aria-selected="${P.tab === k}" data-act="tab" data-tab="${k}" class="${P.tab === k ? "on" : ""}">${t}${badge[k] ? `<b>${badge[k]}</b>` : ""}</button>`).join("")}</nav>
@@ -972,6 +977,7 @@ function onPatientClick(ev) {
     case "transfer": openTransfer(); break;
     case "discharge": openDischarge(); break;
     case "prevAdm": loadPrevAdmissions(); break;
+    case "print": openPrintDialog(); break;
   }
 }
 
@@ -2128,4 +2134,310 @@ async function tabAudit(body) {
   </table></div>` : `<div class="empty">لا يوجد عمليات مسجلة بعد.</div>`}`;
   const q = document.getElementById("auQ");
   q.oninput = () => body.querySelectorAll("#auBody tr").forEach((tr) => tr.classList.toggle("hidden", !tr.dataset.s.includes(q.value.trim())));
+}
+
+/* =========================================================
+   المرحلة 4: الطباعة و PDF والإحصائيات (أدمن)
+   ========================================================= */
+const PRINT_CSS = `
+@page{size:A4;margin:12mm 11mm 14mm}
+@page{@bottom-center{content:"صفحة " counter(page) " من " counter(pages);font-size:9pt;color:#666}}
+*{box-sizing:border-box}
+body{font-family:"IBM Plex Sans Arabic",Tahoma,Arial,sans-serif;color:#13302C;font-size:10.5pt;line-height:1.5;margin:0;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+.ph{display:flex;align-items:center;gap:12px;border-bottom:2px solid #0E6B63;padding-bottom:8px;margin-bottom:12px}
+.ph img{max-height:56px;max-width:120px}
+.ph strong{display:block;font-size:14pt}
+.ph span{color:#56706A}
+.ph-meta{margin-inline-start:auto;text-align:end;font-size:8.5pt;color:#56706A}
+h1{font-size:16pt;margin:0 0 4px}
+h2{font-size:12pt;margin:16px 0 6px;padding:3px 8px;background:#DCEDE9;border-radius:4px;break-after:avoid}
+.sub{color:#56706A;margin:0 0 8px}
+.kv2{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:0}
+.kv dt{color:#56706A}
+.kv dd{margin:0;font-weight:600}
+table{width:100%;border-collapse:collapse;margin:4px 0 10px;font-size:9.5pt}
+th,td{border:1px solid #B9C9C4;padding:3px 5px;text-align:start;vertical-align:top}
+thead th{background:#F0F5F3}
+tr{break-inside:avoid}
+.grid th,.grid td{text-align:center}
+.grid tbody th{text-align:start;background:#F6F9F8;white-space:nowrap}
+.grid small{display:block;font-size:7.5pt;color:#56706A;font-weight:400}
+.grid td.note{text-align:start;font-size:8.5pt}
+.c-stop{color:#B4232A;font-weight:600}
+.c-chg{background:#FDF3DF}
+.muted{color:#56706A}
+.pre{white-space:pre-wrap}
+.ltr{direction:ltr;unicode-bidi:plaintext}
+.sign{margin-top:28px;display:flex;justify-content:space-between;font-size:10pt}
+`;
+
+function printDoc(title, bodyHtml, withLogo) {
+  const s = S.settings;
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${esc(title)}</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>${PRINT_CSS}</style></head><body>
+  <header class="ph">${withLogo && s.logo ? `<img src="${s.logo}" alt="">` : ""}
+    <div><strong>${esc(s.hospitalName)}</strong><span>الرعاية المركزة</span></div>
+    <div class="ph-meta">تاريخ الطباعة: ${fmtDateTime(new Date())}<br>${esc(S.profile.displayName)}</div></header>
+  ${bodyHtml}</body></html>`;
+  document.getElementById("printFrame")?.remove();
+  const fr = document.createElement("iframe");
+  fr.id = "printFrame";
+  fr.title = "طباعة";
+  fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+  document.body.appendChild(fr);
+  let done = false;
+  const go = async () => {
+    if (done) return; done = true;
+    try { await fr.contentDocument.fonts?.ready; } catch {}
+    setTimeout(() => { fr.contentWindow.focus(); fr.contentWindow.print(); }, 150);
+  };
+  fr.onload = go;
+  const d = fr.contentDocument;
+  d.open(); d.write(html); d.close();
+  setTimeout(go, 2500);
+}
+
+const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+
+function openPrintDialog() {
+  const hasLogo = !!S.settings.logo;
+  const secs = [["info", "البيانات والدخول والخروج"], ["history", "التاريخ المرضي والتشخيص"], ["consult", "الإشراف المشترك"],
+    ["inv", "الأشعة والتحاليل"], ["vitals", "العلامات الحيوية وتطور الحالة"], ["meds", "العلاج"]];
+  const f = formDialog("طباعة ملف المريض", `
+    <div class="field"><span>الأقسام</span><div class="checks">${secs.map(([k, l]) =>
+      `<label><input type="checkbox" name="sec" value="${k}" checked> ${l}</label>`).join("")}</div></div>
+    <div class="row2">
+      <label class="field"><span>فترة العلامات الحيوية والعلاج</span>
+        <select name="range"><option value="0">كل أيام الإقامة</option><option value="1">آخر يوم</option><option value="3">آخر 3 أيام</option><option value="7">آخر 7 أيام</option></select></label>
+      <div class="field"><span>اللوجو</span><div class="checks"><label><input type="checkbox" name="logo" ${hasLogo ? "checked" : "disabled"}> ${hasLogo ? "طباعة باللوجو" : "مفيش لوجو متسجل"}</label></div></div>
+    </div>
+    <p class="hint">عشان تحفظه PDF: من نافذة الطباعة اختار <strong>Save as PDF</strong> أو <strong>حفظ بتنسيق PDF</strong> بدل الطابعة.</p>`,
+    "طباعة",
+    async (f) => {
+      const sel = checkedValues(f, "sec");
+      if (!sel.length) return "اختر قسماً واحداً على الأقل.";
+      const a = S.P.adm;
+      printDoc(`${a.patientName} - ${fmtDate(new Date())}`, buildPatientPrint(sel, Number(f.elements.range.value)), f.elements.logo.checked);
+    });
+  return f;
+}
+
+function buildPatientPrint(sel, rangeDays) {
+  const P = S.P, a = P.adm, p = P.pat;
+  const unit = unitById(a.unitId) || { name: a.unitId, bedLabel: "سرير" };
+  const lastDay = isoDay(stayEnd(a));
+  const fromDay = rangeDays ? addDays(lastDay, -(rangeDays - 1)) : isoDay(toDate(a.admitAt));
+  let h = `<h1>${esc(p.name || a.patientName)}</h1>
+    <p class="sub">${esc(unit.name)}، ${esc(unit.bedLabel)} ${a.bed}، دخول ${fmtDateTime(a.admitAt)}، ${stayDays(a)} يوم إقامة
+    ${a.status === "discharged" ? `، خرج ${fmtDateTime(a.dischargeAt)} (${DIS_TYPES[a.dischargeType] || ""})` : ""}</p>`;
+
+  if (sel.includes("info")) {
+    const idRows = p.idType === "newborn"
+      ? `<dt>اسم الأم</dt><dd>${esc(p.motherName)}</dd><dt>الرقم القومي للأم</dt><dd class="ltr">${esc(p.motherNationalId)}</dd>`
+      : `<dt>الرقم القومي</dt><dd class="ltr">${esc(p.nationalId) || "غير معروف"}</dd>`;
+    const i = a.dischargeInfo || {};
+    h += `<h2>البيانات</h2><div class="kv2">
+      <dl class="kv">${idRows}
+        <dt>السن</dt><dd>${esc(ageText(p.birthDate, p.birthDateEstimated)) || "—"}</dd>
+        <dt>النوع</dt><dd>${genderText(p.gender) || "—"}</dd>
+        <dt>العنوان</dt><dd>${esc(p.address) || "—"}</dd>
+        <dt>التليفون</dt><dd class="ltr">${esc(p.phone) || "—"}</dd>
+        <dt>مرات الدخول</dt><dd>${p.admissionsCount || 1}</dd></dl>
+      <dl class="kv">
+        <dt>تاريخ الدخول</dt><dd>${fmtDateTime(a.admitAt)}</dd>
+        <dt>استشاري الحالة</dt><dd>${esc(a.consultant) || "—"}</dd>
+        <dt>المعاملة المالية</dt><dd>${esc(a.finance) || "—"}</dd>
+        <dt>التخصصات المشتركة</dt><dd>${esc((a.specialties || []).join("، ")) || "—"}</dd>
+        ${a.status === "discharged" ? `<dt>الخروج</dt><dd>${DIS_TYPES[a.dischargeType] || ""}، ${fmtDateTime(a.dischargeAt)}</dd>
+          ${i.deathCause ? `<dt>سبب الوفاة</dt><dd>${esc(i.deathCause)}</dd>` : ""}
+          ${i.ward ? `<dt>القسم الداخلي</dt><dd>${esc(i.ward)}</dd>` : ""}
+          ${i.hospital ? `<dt>المستشفى</dt><dd>${esc(i.hospital)}</dd>` : ""}
+          ${i.reason ? `<dt>سبب التحويل</dt><dd>${esc(i.reason)}</dd>` : ""}
+          ${i.notes ? `<dt>ملاحظات</dt><dd>${esc(i.notes)}</dd>` : ""}` : ""}
+      </dl></div>
+      ${a.moves?.length ? `<table><thead><tr><th>وقت النقل</th><th>من</th><th>إلى</th><th>السبب</th></tr></thead><tbody>${[...a.moves]
+        .sort((x, y) => toDate(x.at) - toDate(y.at)).map((m) => `<tr><td>${fmtDateTime(m.at)}</td>
+        <td>${esc(unitName(m.fromUnit))} ${m.fromBed}</td><td>${esc(unitName(m.toUnit))} ${m.toBed}</td><td>${esc(m.reason)}</td></tr>`).join("")}</tbody></table>` : ""}`;
+  }
+
+  if (sel.includes("history")) {
+    const cur = P.entries.filter((e) => e.kind === "history").sort(desc)[0];
+    const dx = P.entries.filter((e) => e.kind === "diagnosis").sort(asc);
+    h += `<h2>التاريخ المرضي</h2>${cur
+      ? `<dl class="kv">${HISTORY_FIELDS.filter(([k]) => cur[k]).map(([k, l]) => `<dt>${l}</dt><dd class="pre ltr">${esc(cur[k])}</dd>`).join("")}</dl>`
+      : `<p class="muted">لم يُسجل.</p>`}
+      <h2>التشخيص</h2>${dx.length ? `<table><thead><tr><th>الوقت</th><th>النوع</th><th>التشخيص</th><th>بواسطة</th></tr></thead><tbody>${dx.map((e) =>
+        `<tr><td>${fmtDateTime(e.at)}</td><td>${DX_TYPES[e.dxType] || ""}</td><td class="pre ltr">${esc(e.text)}</td><td>${esc(e.createdByName)}</td></tr>`).join("")}</tbody></table>`
+      : `<p class="muted">لم يُسجل.</p>`}`;
+  }
+
+  if (sel.includes("consult")) {
+    const list = P.entries.filter((e) => e.kind === "consult").sort(asc);
+    h += `<h2>الإشراف المشترك</h2>${list.length ? `<table><thead><tr><th>الوقت</th><th>التخصص</th><th>الطبيب</th><th>الرأي</th></tr></thead><tbody>${list.map((e) =>
+      `<tr><td>${fmtDateTime(e.at)}</td><td>${esc(e.specialty)}</td><td>${esc(e.doctor)}</td><td class="pre">${esc(e.opinion)}</td></tr>`).join("")}</tbody></table>`
+      : `<p class="muted">لا يوجد.</p>`}`;
+  }
+
+  if (sel.includes("inv")) {
+    const list = P.entries.filter((e) => e.kind === "investigation").sort(asc);
+    h += `<h2>الأشعة والتحاليل</h2>${list.length ? `<table><thead><tr><th>وقت الطلب</th><th>النوع</th><th>الطلب</th><th>النتيجة</th><th>وقت النتيجة</th></tr></thead><tbody>${list.map((e) =>
+      `<tr><td>${fmtDateTime(e.at)}</td><td>${INV_TYPES[e.invType] || ""}</td><td class="ltr">${esc(e.name)}</td>
+       <td class="pre ltr">${esc(e.result) || "منتظر"}</td><td>${e.resultAt ? fmtDateTime(e.resultAt) : ""}</td></tr>`).join("")}</tbody></table>`
+      : `<p class="muted">لا يوجد.</p>`}`;
+  }
+
+  if (sel.includes("vitals")) {
+    const fields = unitVitals(unitById(a.unitId));
+    const rs = [...P.vitals].sort(asc).filter((r) => isoDay(toDate(r.at)) >= fromDay);
+    h += `<h2>العلامات الحيوية وتطور الحالة</h2>` + (rs.length ? chunk(rs, 7).map((part) => `
+      <table class="grid"><thead><tr><th></th>${part.map((r) => `<th>${fmtDayShort(isoDay(toDate(r.at)))}<small>${fmtTime(r.at)}، ${shiftName(r.at)}</small></th>`).join("")}</tr></thead>
+      <tbody>${fields.map((f) => `<tr><th>${esc(f.label)}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}</th>${part.map((r) => `<td>${esc(r.values?.[f.key] ?? "")}</td>`).join("")}</tr>`).join("")}
+      <tr><th>تطور الحالة</th>${part.map((r) => `<td class="note pre ltr">${esc(r.note || "")}</td>`).join("")}</tr>
+      <tr><th>سجّل</th>${part.map((r) => `<td><small>${esc(r.createdByName)}</small></td>`).join("")}</tr></tbody></table>`).join("")
+      : `<p class="muted">لا يوجد قراءات في الفترة دي.</p>`);
+  }
+
+  if (sel.includes("meds")) {
+    const days = dayRange(fromDay < isoDay(toDate(a.admitAt)) ? isoDay(toDate(a.admitAt)) : fromDay, lastDay);
+    const meds = [...P.meds].sort((x, y) => x.startDate.localeCompare(y.startDate))
+      .filter((m) => !(m.stopDate && m.stopDate < days[0]) && !(medEnd(m) && medEnd(m) < days[0]) && m.startDate <= lastDay);
+    const cell = (m, day) => {
+      const end = medEnd(m);
+      if (day < m.startDate || (m.stopDate && day > m.stopDate) || (end && day > end)) return `<td></td>`;
+      if (m.stopDate === day) return `<td class="c-stop">أوقف</td>`;
+      const d = sortedDoses(m).filter((x) => x.from <= day).pop();
+      if (!d) return `<td></td>`;
+      return `<td class="${d.from === day && day !== m.startDate ? "c-chg" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small>${m.duration ? `<small>${medDayNo(m, day)}/${m.duration}</small>` : ""}</td>`;
+    };
+    h += `<h2>العلاج</h2>` + (meds.length && days.length ? chunk(days, 8).map((part) => `
+      <table class="grid"><thead><tr><th>الدواء</th>${part.map((d) => `<th>${fmtDayShort(d)}<small>اليوم ${stayDayOn(a.admitAt, d)}</small></th>`).join("")}</tr></thead>
+      <tbody>${meds.map((m) => `<tr><th class="ltr">${esc(m.name)}<small>${esc(m.route)}</small></th>${part.map((d) => cell(m, d)).join("")}</tr>`).join("")}</tbody></table>`).join("")
+      : `<p class="muted">لا يوجد علاج في الفترة دي.</p>`);
+  }
+
+  h += `<div class="sign"><span>توقيع الطبيب: ....................</span><span>توقيع الاستشاري: ....................</span></div>`;
+  return h;
+}
+
+/* ---------- الإحصائيات (أدمن) ---------- */
+// تقسيم إقامة المريض على الوحدات حسب سجل النقل
+function staySegments(a) {
+  const mv = [...(a.moves || [])].sort((x, y) => toDate(x.at) - toDate(y.at));
+  let unit = mv.length ? mv[0].fromUnit : a.unitId, t = toDate(a.admitAt);
+  const segs = [];
+  for (const m of mv) { segs.push({ unit, from: t, to: toDate(m.at) }); unit = m.toUnit; t = toDate(m.at); }
+  segs.push({ unit, from: t, to: stayEnd(a) });
+  return segs;
+}
+
+function renderStats() {
+  const now = new Date();
+  const T = (S.T ||= { from: isoDay(new Date(now.getFullYear(), now.getMonth(), 1)), to: isoDay(now) });
+  const us = units();
+  let tb = 0, to = 0;
+  const occRows = us.map((u) => {
+    const o = (S.adm[u.id] || []).length; tb += u.beds; to += o;
+    const pct = u.beds ? Math.round((o / u.beds) * 100) : 0;
+    return `<tr><td>${esc(u.name)}</td><td>${u.beds}</td><td>${o}</td><td>${u.beds - o}</td>
+      <td><div class="bar-cell"><div class="meter"><i style="width:${pct}%"></i></div><span>${pct}%</span></div></td></tr>`;
+  }).join("");
+  const tp = tb ? Math.round((to / tb) * 100) : 0;
+  shell(`
+  <div class="toolbar"><h2>الإحصائيات</h2><button class="btn ghost" id="stPrint">طباعة</button></div>
+  <section class="settings-block">
+    <h3 class="st-h">الإشغال الحالي</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>الوحدة</th><th>الأسرّة</th><th>مشغول</th><th>فارغ</th><th>الإشغال</th></tr></thead>
+      <tbody>${occRows}<tr class="total"><td>الإجمالي</td><td>${tb}</td><td>${to}</td><td>${tb - to}</td>
+        <td><div class="bar-cell"><div class="meter"><i style="width:${tp}%"></i></div><span>${tp}%</span></div></td></tr></tbody>
+    </table></div>
+  </section>
+  <h3 class="st-h">إحصائيات فترة</h3>
+  <form class="filters" id="stF">
+    <label class="field"><span>من</span><input type="date" name="from" value="${T.from}"></label>
+    <label class="field"><span>إلى</span><input type="date" name="to" value="${T.to}"></label>
+    <button class="btn">عرض</button>
+  </form>
+  <div id="stBody"><div class="loading">جاري الحساب…</div></div>`);
+  document.getElementById("stPrint").onclick = () => window.print();
+  const f = document.getElementById("stF");
+  f.onsubmit = (ev) => { ev.preventDefault(); T.from = f.elements.from.value; T.to = f.elements.to.value; loadStats(); };
+  loadStats();
+}
+
+async function loadStats() {
+  const T = S.T, body = document.getElementById("stBody");
+  if (!body) return;
+  if (!T.from || !T.to || T.from > T.to) { body.innerHTML = `<div class="err">حدد فترة صحيحة.</div>`; return; }
+  body.innerHTML = `<div class="loading">جاري الحساب…</div>`;
+  const start = new Date(T.from + "T00:00:00");
+  const end = new Date(T.to + "T23:59:59.999");
+  const effEnd = new Date(Math.min(end, new Date()));
+  let all;
+  try {
+    // كل الحالات اللي خرجت بعد بداية الفترة + الحالات الموجودة حالياً = كل اللي كانوا موجودين في الفترة
+    const snap = await getDocs(query(collection(db, "admissions"), where("dischargeAt", ">=", Timestamp.fromDate(start)), orderBy("dischargeAt")));
+    all = [...snap.docs.map((d) => ({ id: d.id, ...d.data() })), ...Object.values(S.adm).flat().filter(Boolean)]
+      .filter((a) => toDate(a.admitAt) <= end);
+  } catch (e) { body.innerHTML = `<div class="err">${esc(errText(e))}</div>`; return; }
+
+  const blank = () => ({ adm: 0, dis: 0, types: { improved: 0, death: 0, ward: 0, transfer: 0 }, los: 0, hours: 0 });
+  const U = {};
+  units().forEach((u) => (U[u.id] = blank()));
+  const fin = {};
+  const inRange = (d) => d && d >= start && d <= end;
+  for (const a of all) {
+    const segs = staySegments(a);
+    for (const s of segs) {
+      const ov = Math.min(s.to, effEnd) - Math.max(s.from, start);
+      if (ov > 0) (U[s.unit] ||= blank()).hours += ov / 36e5;
+    }
+    if (inRange(toDate(a.admitAt))) {
+      (U[segs[0].unit] ||= blank()).adm++;
+      const k = a.finance || "غير محدد";
+      fin[k] = (fin[k] || 0) + 1;
+    }
+    if (a.status === "discharged" && inRange(toDate(a.dischargeAt))) {
+      const x = (U[a.unitId] ||= blank());
+      x.dis++; x.types[a.dischargeType] = (x.types[a.dischargeType] || 0) + 1; x.los += stayDays(a);
+    }
+  }
+  const periodDays = Math.max(0, (effEnd - start) / 864e5);
+  const pct = (n, d) => (d ? `${Math.round((n / d) * 1000) / 10}%` : "—");
+  const tot = blank(); let totBeds = 0;
+  const row = (name, x, beds) => {
+    const occ = beds && periodDays ? (x.hours / 24) / (beds * periodDays) : 0;
+    const op = Math.min(100, Math.round(occ * 100));
+    return `<tr><td>${esc(name)}</td><td>${x.adm}</td><td>${x.dis}</td>
+      <td>${x.types.improved}</td><td>${x.types.death}</td><td>${x.types.ward}</td><td>${x.types.transfer}</td>
+      <td>${pct(x.types.death, x.dis)}</td><td>${x.dis ? (Math.round((x.los / x.dis) * 10) / 10) + " يوم" : "—"}</td>
+      <td>${Math.round(x.hours / 24)}</td>
+      <td><div class="bar-cell"><div class="meter"><i style="width:${op}%"></i></div><span>${beds && periodDays ? op + "%" : "—"}</span></div></td></tr>`;
+  };
+  const rows = Object.entries(U).map(([id, x]) => {
+    const u = unitById(id);
+    totBeds += u?.beds || 0;
+    tot.adm += x.adm; tot.dis += x.dis; tot.los += x.los; tot.hours += x.hours;
+    Object.keys(tot.types).forEach((k) => (tot.types[k] += x.types[k] || 0));
+    return row(u?.name || id, x, u?.beds || 0);
+  }).join("");
+  const finTotal = Object.values(fin).reduce((s, n) => s + n, 0);
+
+  body.innerHTML = `
+  <p class="muted">الفترة من ${fmtDate(T.from)} إلى ${fmtDate(T.to)}${end > new Date() ? " (محسوبة لحد النهارده)" : ""}.</p>
+  <div class="table-wrap"><table class="stats">
+    <thead><tr><th>الوحدة</th><th>دخول</th><th>خروج</th><th>تحسن</th><th>وفاة</th><th>داخلي</th><th>مستشفى أخرى</th>
+      <th>نسبة الوفيات</th><th>متوسط الإقامة</th><th>أيام المرضى</th><th>نسبة الإشغال</th></tr></thead>
+    <tbody>${rows}${row("الإجمالي", tot, totBeds).replace("<tr>", '<tr class="total">')}</tbody>
+  </table></div>
+  <h3 class="st-h">المعاملة المالية (حالات الدخول في الفترة)</h3>
+  ${finTotal ? `<div class="fin">${Object.entries(fin).sort((x, y) => y[1] - x[1]).map(([k, n]) =>
+    `<div class="fin-item"><strong>${n}</strong><span>${esc(k)}</span><small>${pct(n, finTotal)}</small></div>`).join("")}</div>`
+    : `<p class="muted">لا يوجد دخول في الفترة دي.</p>`}
+  <p class="muted st-note">نسبة الوفيات = الوفيات ÷ حالات الخروج في الفترة. متوسط الإقامة لحالات الخروج فقط.
+  أيام المرضى ونسبة الإشغال بتتحسب بالساعات لكل وحدة حسب سجل النقل، ونسبة الإشغال = أيام المرضى ÷ (عدد الأسرّة × أيام الفترة).
+  الدخول بيتحسب على أول وحدة دخلها المريض، والخروج على آخر وحدة.</p>`;
 }
