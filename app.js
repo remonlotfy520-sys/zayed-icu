@@ -475,6 +475,7 @@ function renderDashboard() {
         <a class="bed occ" href="#/patient/${a.id}">
           <span class="bed-no">${esc(u.bedLabel)} ${n}</span>
           <span class="bed-day"><b>${dayOfStay(a.admitAt)}</b><small>يوم</small></span>
+          ${a.clinical?.resp === "vent" ? `<span class="bed-flag">فنت</span>` : ""}
           <span class="bed-name">${esc(a.patientName)}</span>
           <span class="bed-meta">${esc(meta)}</span>
           ${a.consultant ? `<span class="bed-meta">${esc(a.consultant)}</span>` : ""}
@@ -741,12 +742,16 @@ const HISTORY_FIELDS = [
   ["other", "ملاحظات أخرى"],
 ];
 const DX_TYPES = { initial: "مبدئي", final: "نهائي", complication: "مضاعفات" };
+// الحالة السريرية: قرح الفراش والتنفس و APACHE II
+const BEDSORE = { "0": "لا يوجد", "1": "الدرجة 1", "2": "الدرجة 2", "3": "الدرجة 3", "4": "الدرجة 4" };
+const RESP = { room: "هواء الغرفة", mask: "ماسك", vent: "جهاز تنفس (فنت)" };
+const RESP_SHORT = { room: "هواء غرفة", mask: "ماسك", vent: "فنت" };
 const INV_TYPES = { lab: "تحليل", radiology: "أشعة", other: "أخرى" };
 const ROUTES = ["IV", "IM", "SC", "Oral", "NG tube", "Inhalation", "Topical", "Rectal", "Other"];
 const FREQS = ["Once daily", "BID (q12h)", "TID (q8h)", "QID (q6h)", "q4h", "PRN", "STAT", "Continuous infusion"];
 const PTABS = [
   ["info", "البيانات"],
-  ["history", "التاريخ والتشخيص"],
+  ["history", "الحالة والتشخيص"],
   ["consult", "الإشراف المشترك"],
   ["inv", "الأشعة والتحاليل"],
   ["vitals", "العلامات الحيوية"],
@@ -928,6 +933,9 @@ function drawPatient() {
       <span class="tag">${esc(unit.bedLabel)} ${a.bed}</span>
       ${active ? `<span class="tag day">اليوم ${stayDays(a)} للإقامة</span>` : `<span class="tag archived">في الأرشيف: ${DIS_TYPES[a.dischargeType] || "خرج"}</span>`}
       ${a.consultant ? `<span class="tag">${esc(a.consultant)}</span>` : ""}
+      ${a.clinical?.resp ? `<span class="tag ${a.clinical.resp === "vent" ? "hot" : ""}">${RESP_SHORT[a.clinical.resp]}</span>` : ""}
+      ${Number(a.clinical?.bedsore) > 0 ? `<span class="tag ${Number(a.clinical.bedsore) >= 3 ? "hot" : ""}">قرحة فراش ${a.clinical.bedsore}</span>` : ""}
+      ${a.clinical?.apache != null ? `<span class="tag">APACHE ${a.clinical.apache}</span>` : ""}
     </div>
     ${(active && canWriteUnit(a.unitId)) || isAdmin() ? `<div class="file-actions">
       ${active && canWriteUnit(a.unitId) ? `<button class="btn ghost" data-act="transfer">نقل</button>
@@ -963,6 +971,8 @@ function onPatientClick(ev) {
     case "histEdit": openHistory(); break;
     case "histToggle": P.showHist = !P.showHist; drawPatient(); break;
     case "dxAdd": openDx(); break;
+    case "stAdd": openStatus(); break;
+    case "stEdit": openStatus(ent()); break;
     case "dxEdit": openDx(ent()); break;
     case "cAdd": openConsult(); break;
     case "cEdit": openConsult(ent()); break;
@@ -1054,7 +1064,7 @@ function ptHistory() {
         </li>`).join("")}</ul>`
     : `<p class="muted">لم يُسجل تشخيص بعد.</p>`;
 
-  return `
+  return clinicalPanel() + `
   <div class="file-grid">
     <section class="panel">
       <header><h2>التاريخ المرضي</h2>${add ? `<button class="btn ghost sm" data-act="histEdit">${cur ? "تحديث" : "تسجيل"}</button>` : ""}</header>
@@ -1065,6 +1075,79 @@ function ptHistory() {
       ${dxBody}
     </section>
   </div>`;
+}
+
+function clinicalPanel() {
+  const list = S.P.entries.filter((e) => e.kind === "status").sort(desc);
+  const c = list[0];
+  const add = pCanAdd();
+  const box = (label, val, cls = "") => `<div class="cl-box ${cls}"><span>${label}</span><strong>${val}</strong></div>`;
+  return `
+  <section class="panel clinical">
+    <header><h2>الحالة السريرية</h2>${add ? `<button class="btn ghost sm" data-act="stAdd">تحديث</button>` : ""}</header>
+    ${c ? `<div class="cl-row">
+        ${box("التنفس", esc(RESP[c.resp] || "—"), c.resp === "vent" ? "hot" : "")}
+        ${box("قرح الفراش", esc(BEDSORE[c.bedsore] || "—") + (c.bedsoreSite ? `<small>${esc(c.bedsoreSite)}</small>` : ""), Number(c.bedsore) >= 3 ? "hot" : "")}
+        ${box("APACHE II", c.apache ?? "—")}
+      </div>
+      <p class="by-line">آخر تحديث: ${esc(c.createdByName)}، ${fmtDateTime(c.at)}</p>
+      ${list.length > 1 || pCanEdit(c.at) ? `<details class="cl-hist"${list.length > 1 ? "" : " open"}><summary>السجل (${list.length})</summary>
+        <div class="table-wrap"><table>
+          <thead><tr><th>الوقت</th><th>التنفس</th><th>قرح الفراش</th><th>APACHE II</th><th>بواسطة</th><th></th></tr></thead>
+          <tbody>${list.map((e) => `<tr><td>${fmtDateTime(e.at)}</td><td>${esc(RESP_SHORT[e.resp] || "—")}</td>
+            <td>${esc(BEDSORE[e.bedsore] || "—")}${e.bedsoreSite ? `<div class="by-line">${esc(e.bedsoreSite)}</div>` : ""}</td>
+            <td>${e.apache ?? "—"}</td><td>${esc(e.createdByName)}</td>
+            <td>${pCanEdit(e.at) ? `<button class="btn ghost sm" data-act="stEdit" data-id="${e.id}">تعديل</button>` : ""}</td></tr>`).join("")}</tbody>
+        </table></div></details>` : ""}`
+    : `<p class="muted">لم تُسجل بعد. سجّل التنفس وقرح الفراش و APACHE II من زر "تحديث".</p>`}
+  </section>`;
+}
+
+function openStatus(e) {
+  const prev = e || S.P.entries.filter((x) => x.kind === "status").sort(desc)[0] || {};
+  const f = formDialog(e ? "تعديل الحالة السريرية" : "تحديث الحالة السريرية", `
+    <div class="field"><span>التنفس</span><fieldset class="seg">${Object.entries(RESP).map(([k, l]) =>
+      `<label><input type="radio" name="resp" value="${k}" ${prev.resp === k ? "checked" : ""}> ${l}</label>`).join("")}</fieldset></div>
+    <div class="field"><span>قرح الفراش</span><fieldset class="seg">${Object.entries(BEDSORE).map(([k, l]) =>
+      `<label><input type="radio" name="bedsore" value="${k}" ${String(prev.bedsore ?? "") === k ? "checked" : ""}> ${k === "0" ? l : k}</label>`).join("")}</fieldset></div>
+    <label class="field" id="siteWrap"><span>مكان القرحة</span><input name="bedsoreSite" value="${esc(prev.bedsoreSite || "")}" placeholder="مثال: العجز، الكعب"></label>
+    <label class="field"><span>APACHE II Score</span><input name="apache" type="number" min="0" max="71" class="ltr" value="${prev.apache ?? ""}" placeholder="0 - 71"></label>
+    ${timeInput("at", "الوقت", e?.at || new Date())}`,
+    e ? "حفظ التعديل" : "حفظ",
+    async (f) => {
+      const resp = f.querySelector('input[name="resp"]:checked')?.value || "";
+      const bedsore = f.querySelector('input[name="bedsore"]:checked')?.value || "";
+      const av = f.elements.apache.value.trim();
+      const apache = av === "" ? null : Number(av);
+      if (!resp && !bedsore && apache == null) return "سجّل خانة واحدة على الأقل.";
+      if (apache != null && (!Number.isInteger(apache) || apache < 0 || apache > 71)) return "APACHE II لازم يكون رقم صحيح من 0 لـ 71.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      const data = { kind: "status", resp, bedsore, bedsoreSite: Number(bedsore) > 0 ? f.elements.bedsoreSite.value.trim() : "",
+        apache, at: Timestamp.fromDate(at) };
+      let id = e?.id;
+      if (e) await pUpd(subRef("entries", e.id), { ...data, ...upMeta() });
+      else id = (await addDoc(subRef("entries"), { ...data, ...meta() })).id;
+      await syncClinical({ id, ...data });
+      toast("تم حفظ الحالة السريرية");
+    },
+    e ? async () => { await pDel(subRef("entries", e.id)); await syncClinical(null, e.id); } : null);
+  const site = () => document.getElementById("siteWrap").classList.toggle("hidden", !(Number(f.querySelector('input[name="bedsore"]:checked')?.value) > 0));
+  f.querySelectorAll('input[name="bedsore"]').forEach((r) => (r.onchange = site));
+  site();
+}
+
+// آخر حالة سريرية بتتحفظ على الدخول نفسه عشان تظهر على خريطة الأسرّة
+async function syncClinical(changed, removedId) {
+  const a = S.P.adm;
+  let list = S.P.entries.filter((x) => x.kind === "status" && x.id !== removedId && x.id !== changed?.id);
+  if (changed) list.push(changed);
+  list.sort(desc);
+  const c = list[0];
+  try {
+    await updateDoc(doc(db, "admissions", a.id), {
+      clinical: c ? { resp: c.resp || "", bedsore: c.bedsore || "", apache: c.apache ?? null, at: c.at } : null,
+    });
+  } catch (e) { console.error("clinical", e); }
 }
 
 function openHistory() {
@@ -1901,7 +1984,7 @@ function audit(action, extra = {}) {
   if (extra.details) rec.details = extra.details;
   addDoc(collection(db, "audit"), rec).catch((e) => console.error("audit", e));
 }
-const KIND_LABEL = { history: "التاريخ المرضي", diagnosis: "تشخيص", consult: "رأي تخصص", investigation: "طلب أشعة/تحاليل" };
+const KIND_LABEL = { status: "الحالة السريرية", history: "التاريخ المرضي", diagnosis: "تشخيص", consult: "رأي تخصص", investigation: "طلب أشعة/تحاليل" };
 function recLabel(col, old) {
   if (col === "vitals") return "قراءة علامات حيوية";
   if (col === "meds") return `علاج ${old?.name || ""}`;
@@ -2321,7 +2404,7 @@ const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i +=
 
 function openPrintDialog() {
   const hasLogo = !!S.settings.logo;
-  const secs = [["info", "البيانات والدخول والخروج"], ["history", "التاريخ المرضي والتشخيص"], ["consult", "الإشراف المشترك"],
+  const secs = [["info", "البيانات والدخول والخروج"], ["history", "الحالة السريرية والتاريخ المرضي والتشخيص"], ["consult", "الإشراف المشترك"],
     ["inv", "الأشعة والتحاليل"], ["vitals", "العلامات الحيوية وتطور الحالة"], ["meds", "العلاج"]];
   const f = formDialog("طباعة ملف المريض", `
     <div class="field"><span>الأقسام</span><div class="checks">${secs.map(([k, l]) =>
@@ -2383,6 +2466,9 @@ function buildPatientPrint(sel, rangeDays) {
   if (sel.includes("history")) {
     const cur = P.entries.filter((e) => e.kind === "history").sort(desc)[0];
     const dx = P.entries.filter((e) => e.kind === "diagnosis").sort(asc);
+    const st = P.entries.filter((e) => e.kind === "status").sort(asc);
+    if (st.length) h += `<h2>الحالة السريرية</h2><table><thead><tr><th>الوقت</th><th>التنفس</th><th>قرح الفراش</th><th>APACHE II</th></tr></thead><tbody>${st.map((e) =>
+      `<tr><td>${fmtDateTime(e.at)}</td><td>${RESP_SHORT[e.resp] || "—"}</td><td>${BEDSORE[e.bedsore] || "—"}${e.bedsoreSite ? `، ${esc(e.bedsoreSite)}` : ""}</td><td>${e.apache ?? "—"}</td></tr>`).join("")}</tbody></table>`;
     h += `<h2>التاريخ المرضي</h2>${cur
       ? `<dl class="kv">${HISTORY_FIELDS.filter(([k]) => cur[k]).map(([k, l]) => `<dt>${l}</dt><dd class="pre ltr">${esc(cur[k])}</dd>`).join("")}</dl>`
       : `<p class="muted">لم يُسجل.</p>`}
