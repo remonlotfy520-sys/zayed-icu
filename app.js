@@ -507,10 +507,10 @@ function renderDashboard() {
       if (a) {
         const meta = [ageText(a.birthDate, a.birthDateEstimated), genderText(a.gender)].filter(Boolean).join("، ");
         tiles += `
-        <a class="bed occ ${a.clinical?.redFlag ? "rf" : ""}" href="#/patient/${a.id}">
+        <a class="bed occ" href="#/patient/${a.id}">
           <span class="bed-no">${esc(u.bedLabel)} ${n}</span>
           <span class="bed-day"><b>${dayOfStay(a.admitAt)}</b><small>يوم</small></span>
-          ${a.clinical?.resp === "vent" || a.clinical?.redFlag ? `<span class="bed-flag">${a.clinical.redFlag ? "🚩" : ""}${a.clinical.resp === "vent" ? " فنت" : ""}</span>` : ""}
+          ${a.clinical?.resp === "vent" ? `<span class="bed-flag">فنت</span>` : ""}
           <span class="bed-name">${esc(a.patientName)}</span>
           <span class="bed-meta">${esc(meta)}</span>
           ${a.consultant ? `<span class="bed-meta">${esc(a.consultant)}</span>` : ""}
@@ -988,7 +988,6 @@ function drawPatient() {
       ${Number(a.clinical?.bedsore) > 0 ? `<span class="tag ${Number(a.clinical.bedsore) >= 3 ? "hot" : ""}">قرحة فراش ${a.clinical.bedsore}</span>` : ""}
       ${a.clinical?.apache != null ? `<span class="tag ${a.clinical.apache > 40 ? "hot" : ""}">APACHE ${a.clinical.apache}</span>` : ""}
       ${a.clinical?.restraint ? `<span class="tag">أمر تقييد</span>` : ""}
-      ${a.clinical?.redFlag ? `<span class="tag hot">🚩 Red Flag${a.clinical.redFlagNote ? `: ${esc(a.clinical.redFlagNote)}` : ""}</span>` : ""}
     </div>
     ${(active && canWriteUnit(a.unitId)) || canPrint() || canEdit("reports") ? `<div class="file-actions">
       ${active && canWriteUnit(a.unitId) ? `<button class="btn ghost" data-act="transfer">نقل</button>
@@ -1144,10 +1143,9 @@ function clinicalPanel() {
   const add = pCanAdd();
   const box = (label, val, cls = "") => `<div class="cl-box ${cls}"><span>${label}</span><strong>${val}</strong></div>`;
   return `
-  <section class="panel clinical ${c?.redFlag ? "flagged" : ""}">
+  <section class="panel clinical">
     <header><h2>الحالة السريرية</h2>${add ? `<button class="btn ghost sm" data-act="stAdd">تحديث</button>` : ""}</header>
     ${c ? `
-      ${c.redFlag ? `<div class="redflag">🚩 Red Flag${c.redFlagNote ? `: ${esc(c.redFlagNote)}` : ""}</div>` : ""}
       <div class="cl-row">
         ${box("التنفس", esc(RESP[c.resp] || "—"), c.resp === "vent" ? "hot" : "")}
         ${box("درجة الوعي", esc(c.consciousness || "—"))}
@@ -1159,12 +1157,12 @@ function clinicalPanel() {
       <p class="by-line">آخر تحديث: ${esc(c.createdByName)}، ${fmtDateTime(c.at)}</p>
       <details class="cl-hist"><summary>السجل (${list.length})</summary>
         <div class="table-wrap"><table>
-          <thead><tr><th>الوقت</th><th>التنفس</th><th>الوعي</th><th>APACHE</th><th>قرح الفراش</th><th>التقليب</th><th>تقييد</th><th>Red Flag</th><th>بواسطة</th><th></th></tr></thead>
+          <thead><tr><th>الوقت</th><th>التنفس</th><th>الوعي</th><th>APACHE</th><th>قرح الفراش</th><th>التقليب</th><th>تقييد</th><th>بواسطة</th><th></th></tr></thead>
           <tbody>${list.map((e) => `<tr><td class="nowrap">${fmtDateTime(e.at)}</td><td>${esc(RESP_SHORT[e.resp] || "—")}</td>
             <td>${esc(e.consciousness || "—")}</td><td>${e.apache ?? "—"}</td>
             <td>${esc(BEDSORE[e.bedsore] || "—")}${e.bedsoreSite ? `<div class="by-line">${esc(e.bedsoreSite)}</div>` : ""}</td>
             <td>${esc(TURNING[e.turning] || "—")}</td><td>${e.restraint ? "نعم" : "—"}</td>
-            <td>${e.redFlag ? `🚩 ${esc(e.redFlagNote || "")}` : "—"}</td><td>${esc(e.createdByName)}</td>
+            <td>${esc(e.createdByName)}</td>
             <td>${pCanEdit(e.at) ? `<button class="btn ghost sm" data-act="stEdit" data-id="${e.id}">تعديل</button>` : ""}</td></tr>`).join("")}</tbody>
         </table></div></details>`
     : `<p class="muted">لم تُسجل بعد. سجّل التنفس والوعي و APACHE وقرح الفراش والتقليب من زر "تحديث".</p>`}
@@ -1188,9 +1186,7 @@ function openStatus(e) {
     <div class="field"><span>التقليب</span>${seg("turning", TURNING, prev.turning)}</div>
     <div class="checks">
       <label><input type="checkbox" name="restraint" ${prev.restraint ? "checked" : ""}> أمر تقييد</label>
-      <label class="rf"><input type="checkbox" name="redFlag" ${prev.redFlag ? "checked" : ""}> 🚩 Red Flag</label>
     </div>
-    <label class="field" id="rfWrap"><span>سبب الـ Red Flag</span><input name="redFlagNote" value="${esc(prev.redFlagNote || "")}"></label>
     ${timeInput("at", "الوقت", e?.at || new Date())}`,
     e ? "حفظ التعديل" : "حفظ",
     async (f) => {
@@ -1199,31 +1195,23 @@ function openStatus(e) {
       const consciousness = f.elements.consciousness.value.trim();
       const av = f.elements.apache.value.trim();
       const apache = av === "" ? null : Number(av);
-      const restraint = f.elements.restraint.checked, redFlag = f.elements.redFlag.checked;
-      if (!resp && !bedsore && !turning && !consciousness && apache == null && !restraint && !redFlag) return "سجّل خانة واحدة على الأقل.";
+      const restraint = f.elements.restraint.checked;
+      if (!resp && !bedsore && !turning && !consciousness && apache == null && !restraint) return "سجّل خانة واحدة على الأقل.";
       if (apache != null && (!Number.isInteger(apache) || apache < 0 || apache > 71)) return "APACHE II لازم يكون رقم صحيح من 0 لـ 71.";
       const [at, er] = readTime(f.elements.at); if (er) return er;
-      const data = { kind: "status", resp, consciousness, apache, bedsore, turning, restraint, redFlag,
-        bedsoreSite: Number(bedsore) > 0 ? f.elements.bedsoreSite.value.trim() : "",
-        redFlagNote: redFlag ? f.elements.redFlagNote.value.trim() : "", at: Timestamp.fromDate(at) };
+      const data = { kind: "status", resp, consciousness, apache, bedsore, turning, restraint,
+        bedsoreSite: Number(bedsore) > 0 ? f.elements.bedsoreSite.value.trim() : "", at: Timestamp.fromDate(at) };
       let id = e?.id;
       if (e) await pUpd(subRef("entries", e.id), { ...data, ...upMeta() });
       else id = (await addDoc(subRef("entries"), { ...data, ...meta() })).id;
       await syncClinical({ id, ...data });
-      if (data.redFlag && !(latest.redFlag && latest.redFlagNote === data.redFlagNote)) {
-        const a = S.P.adm;
-        sendRedFlagAlert({ name: a.patientName, mr: a.medicalId, section: `الرعاية المركزة: ${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}`,
-          note: data.redFlagNote, diagnosis: S.P.entries.filter((x) => x.kind === "diagnosis").sort(desc)[0]?.text });
-      }
       toast("تم حفظ الحالة السريرية");
     },
     e ? async () => { await pDel(subRef("entries", e.id)); await syncClinical(null, e.id); } : null);
   const sync = () => {
     document.getElementById("siteWrap").classList.toggle("hidden", !(Number(f.querySelector('input[name="bedsore"]:checked')?.value) > 0));
-    document.getElementById("rfWrap").classList.toggle("hidden", !f.elements.redFlag.checked);
   };
   f.querySelectorAll('input[name="bedsore"]').forEach((r) => (r.onchange = sync));
-  f.elements.redFlag.onchange = sync;
   sync();
 }
 
@@ -1237,7 +1225,7 @@ async function syncClinical(changed, removedId) {
   try {
     await updateDoc(doc(db, "admissions", a.id), {
       clinical: c ? { resp: c.resp || "", bedsore: c.bedsore || "", apache: c.apache ?? null, consciousness: c.consciousness || "",
-        turning: c.turning || "", restraint: !!c.restraint, redFlag: !!c.redFlag, redFlagNote: c.redFlagNote || "", at: c.at } : null,
+        turning: c.turning || "", restraint: !!c.restraint, at: c.at } : null,
     });
   } catch (e) { console.error("clinical", e); }
 }
@@ -2001,7 +1989,6 @@ function tabHospital(body) {
           ${logo ? `<button type="button" class="btn ghost sm" id="rmLogo">إزالة</button>` : ""}
         </div>
         <span class="hint">اللوجو هيظهر في الشريط العلوي، وهيبقى اختياري في الطباعة (المرحلة 4).</span></div>
-      ${mailerSettingsHtml()}
       <div class="err" id="hospErr"></div>
       <div class="actions"><button class="btn">حفظ بيانات المستشفى</button></div>
     </form>`;
@@ -2016,9 +2003,7 @@ function tabHospital(body) {
     f.onsubmit = async (ev) => {
       ev.preventDefault();
       try {
-        const mailerUrl = f.elements.mailerUrl.value.trim();
-        if (mailerUrl && !/^https:\/\/script\.google\.com\//.test(mailerUrl)) { document.getElementById("hospErr").textContent = "رابط الإيميل لازم يبدأ بـ https://script.google.com/"; return; }
-        await updateDoc(doc(db, "config", "settings"), { hospitalName: f.hospitalName.value.trim(), logo, mailerUrl });
+        await updateDoc(doc(db, "config", "settings"), { hospitalName: f.hospitalName.value.trim(), logo });
         toast("تم حفظ بيانات المستشفى");
       } catch (e) { document.getElementById("hospErr").textContent = errText(e); }
     };
@@ -2612,10 +2597,10 @@ function buildPatientPrint(sel, rangeDays) {
     const cur = P.entries.filter((e) => e.kind === "history").sort(desc)[0];
     const dx = P.entries.filter((e) => e.kind === "diagnosis").sort(asc);
     const st = P.entries.filter((e) => e.kind === "status").sort(asc);
-    if (st.length) h += `<h2>الحالة السريرية</h2><table><thead><tr><th>الوقت</th><th>التنفس</th><th>الوعي</th><th>APACHE II</th><th>قرح الفراش</th><th>التقليب</th><th>تقييد</th><th>Red Flag</th></tr></thead><tbody>${st.map((e) =>
+    if (st.length) h += `<h2>الحالة السريرية</h2><table><thead><tr><th>الوقت</th><th>التنفس</th><th>الوعي</th><th>APACHE II</th><th>قرح الفراش</th><th>التقليب</th><th>تقييد</th></tr></thead><tbody>${st.map((e) =>
       `<tr><td>${fmtDateTime(e.at)}</td><td>${RESP_SHORT[e.resp] || "—"}</td><td>${esc(e.consciousness || "—")}</td><td>${e.apache ?? "—"}</td>
       <td>${BEDSORE[e.bedsore] || "—"}${e.bedsoreSite ? `، ${esc(e.bedsoreSite)}` : ""}</td><td>${TURNING[e.turning] || "—"}</td>
-      <td>${e.restraint ? "نعم" : "—"}</td><td>${e.redFlag ? esc(e.redFlagNote || "نعم") : "—"}</td></tr>`).join("")}</tbody></table>`;
+      <td>${e.restraint ? "نعم" : "—"}</td></tr>`).join("")}</tbody></table>`;
     h += `<h2>التاريخ المرضي</h2>${cur
       ? `<dl class="kv">${HISTORY_FIELDS.filter(([k]) => cur[k]).map(([k, l]) => `<dt>${l}</dt><dd class="pre ltr">${esc(cur[k])}</dd>`).join("")}</dl>`
       : `<p class="muted">لم يُسجل.</p>`}
@@ -3134,9 +3119,8 @@ function renderWard(filter) {
     let tiles = "";
     for (let n = 1; n <= u.beds; n++) {
       const a = byBed[n];
-      if (a) tiles += `<a class="bed occ ward ${a.redFlag ? "rf" : ""}" href="#/w/${a.id}"><span class="bed-no">سرير ${n}</span>
+      if (a) tiles += `<a class="bed occ ward" href="#/w/${a.id}"><span class="bed-no">سرير ${n}</span>
         <span class="bed-day"><b>${dayOfStay(a.admitAt)}</b><small>يوم</small></span>
-        ${a.redFlag ? `<span class="bed-flag">🚩</span>` : ""}
         <span class="bed-name">${esc(a.patientName)}</span><span class="bed-meta">${esc(a.consultant || "")}</span></a>`;
       else if (w && S.wardActive) tiles += `<button class="bed free" data-dept="${u.id}" data-bed="${n}"><span class="bed-no">سرير ${n}</span><span class="bed-state">فارغ، سجّل دخول</span></button>`;
       else tiles += `<div class="bed free"><span class="bed-no">سرير ${n}</span><span class="bed-state">${S.wardActive ? "فارغ" : "…"}</span></div>`;
@@ -3199,7 +3183,7 @@ function wardAdmissionData(p, dept, bed, at, d, num, mr, source) {
     consultant: d.consultant || "", specialties: d.specialties || [], finance: d.finance || "",
     financeHistory: d.finance ? [{ type: d.finance, from: isoDay(at), byName: S.profile.displayName }] : [],
     diagnosis: d.diagnosis || "", history: d.history || "", xrays: "", labs: "", requests: "",
-    redFlag: false, redFlagNote: "", status: "active", ...(source || {}),
+    status: "active", ...(source || {}),
     createdBy: S.profile.uid, createdByName: S.profile.displayName, createdAt: serverTimestamp(),
   };
 }
@@ -3285,7 +3269,6 @@ function drawWardAdmission() {
       ${a.medicalId ? `<span class="tag mr">${esc(a.medicalId)}</span>` : ""}
       <span class="tag">${esc(u.name)}، سرير ${a.bed}</span>
       ${active ? `<span class="tag day">اليوم ${stayDays(a)} للإقامة</span>` : `<span class="tag archived">خرج: ${WARD_DIS[a.dischargeType] || ""}</span>`}
-      ${a.redFlag ? `<span class="tag hot">🚩 Red Flag${a.redFlagNote ? `: ${esc(a.redFlagNote)}` : ""}</span>` : ""}
       ${a.source === "icu" ? `<a class="tag" href="#/patient/${a.sourceId}">محوّل من الرعاية</a>` : ""}
     </div>
     <div class="file-actions">
@@ -3349,23 +3332,16 @@ function openWardEdit(a) {
     <label class="field"><span>أشعات مطلوبة</span><textarea name="xrays" rows="2" class="ltr-auto">${esc(a.xrays || "")}</textarea></label>
     <label class="field"><span>تحاليل مطلوبة</span><textarea name="labs" rows="2" class="ltr-auto">${esc(a.labs || "")}</textarea></label>
     <label class="field"><span>عروض مطلوبة</span><textarea name="requests" rows="2" class="ltr-auto">${esc(a.requests || "")}</textarea></label>
-    <div class="checks"><label class="rf"><input type="checkbox" name="redFlag" ${a.redFlag ? "checked" : ""}> 🚩 Red Flag</label></div>
-    <label class="field"><span>سبب الـ Red Flag</span><input name="redFlagNote" value="${esc(a.redFlagNote || "")}"></label>`,
+`,
     "حفظ التعديل", async (f) => {
       if (!f.elements.consultant.value) return "اختر استشاري الحالة.";
-      const rf = f.elements.redFlag.checked;
       const upd = { consultant: f.elements.consultant.value, specialties: checkedValues(f, "spec"),
         diagnosis: f.elements.diagnosis.value.trim(), history: f.elements.history.value.trim(),
-        xrays: f.elements.xrays.value.trim(), labs: f.elements.labs.value.trim(), requests: f.elements.requests.value.trim(),
-        redFlag: rf, redFlagNote: rf ? f.elements.redFlagNote.value.trim() : "", ...upMeta() };
-      if (rf && (!a.redFlag || upd.redFlagNote !== a.redFlagNote)) {
-        upd.redFlagAck = false;
-        sendRedFlagAlert({ name: a.patientName, mr: a.medicalId, section: `الداخلي: ${wardById(a.deptId)?.name || ""}، سرير ${a.bed}`, note: upd.redFlagNote, diagnosis: upd.diagnosis });
-      }
+        xrays: f.elements.xrays.value.trim(), labs: f.elements.labs.value.trim(), requests: f.elements.requests.value.trim(), ...upMeta() };
       await updateDoc(doc(db, "wardAdmissions", a.id), upd);
       const { id, ...before } = a;
       audit("تعديل دخول داخلي", { adm: { id: a.id, patientName: a.patientName, unitId: a.deptId },
-        before: { consultant: before.consultant, diagnosis: before.diagnosis, history: before.history, redFlag: !!before.redFlag } });
+        before: { consultant: before.consultant, diagnosis: before.diagnosis, history: before.history } });
       toast("تم حفظ التعديل");
     });
   bindOptChips();
@@ -3594,11 +3570,9 @@ function notifications() {
   const out = [];
   const icuAll = Object.values(S.adm || {}).flat().filter(Boolean);
   icuAll.forEach((a) => {
-    if (a.clinical?.redFlag && !a.clinical.redFlagAck) out.push({ kind: "rf", sec: "رعاية", name: a.patientName, note: a.clinical.redFlagNote, href: `#/patient/${a.id}`, ack: () => updateDoc(doc(db, "admissions", a.id), { "clinical.redFlagAck": true }), canAck: canWriteUnit(a.unitId) });
     if (stayDays(a) > 7) out.push({ kind: "los", sec: "رعاية", name: a.patientName, los: stayDays(a), href: `#/patient/${a.id}` });
   });
   (S.wardActive || []).forEach((a) => {
-    if (a.redFlag && !a.redFlagAck) out.push({ kind: "rf", sec: "داخلي", name: a.patientName, note: a.redFlagNote, href: `#/w/${a.id}`, ack: () => updateDoc(doc(db, "wardAdmissions", a.id), { redFlagAck: true }), canAck: canEdit("ward") });
     if (stayDays(a) > 7) out.push({ kind: "los", sec: "داخلي", name: a.patientName, los: stayDays(a), href: `#/w/${a.id}` });
   });
   const now = Date.now();
@@ -3606,29 +3580,24 @@ function notifications() {
     const t = toDate(o.proposedAt).getTime();
     if (t >= now - 3600e3 && t <= now + 24 * 3600e3) out.push({ kind: "op", name: o.patientName, op: o.operation, when: fmtDateTime(o.proposedAt), href: `#/o/${o.id}` });
   });
-  const order = { rf: 0, op: 1, los: 2 };
+  const order = { op: 0, los: 1 };
   return out.sort((x, y) => order[x.kind] - order[y.kind]);
 }
 
 function bellHtml() {
   const n = notifications();
-  const urgent = n.filter((x) => x.kind === "rf").length;
-  return `<div class="bell-wrap"><button class="bell ${urgent ? "urgent" : ""}" id="bellBtn" aria-label="التنبيهات" aria-expanded="false">🔔${n.length ? `<b>${n.length}</b>` : ""}</button>
+  return `<div class="bell-wrap"><button class="bell" id="bellBtn" aria-label="التنبيهات" aria-expanded="false">🔔${n.length ? `<b>${n.length}</b>` : ""}</button>
     <div class="bell-panel hidden" id="bellPanel">${n.length ? n.map((x, i) =>
-      x.kind === "rf" ? `<div class="nt rf"><a href="${x.href}">🚩 (${x.sec}) <strong>${esc(x.name)}</strong></a>${x.note ? `<div>${esc(x.note)}</div>` : ""}
-        ${x.canAck ? `<button class="btn sm" data-ack="${i}">تم الاطلاع</button>` : ""}</div>`
-      : x.kind === "op" ? `<div class="nt op"><a href="${x.href}">🔪 عملية <strong>${esc(x.op)}</strong> للمريض ${esc(x.name)}</a><div>${x.when}</div></div>`
+      x.kind === "op" ? `<div class="nt op"><a href="${x.href}">🔪 عملية <strong>${esc(x.op)}</strong> للمريض ${esc(x.name)}</a><div>${x.when}</div></div>`
       : `<div class="nt los"><a href="${x.href}">⚠️ (${x.sec}) <strong>${esc(x.name)}</strong> إقامته ${x.los} يوم</a></div>`).join("")
       : `<div class="nt">مفيش تنبيهات.</div>`}</div></div>`;
 }
 function bindBell() {
   const b = document.getElementById("bellBtn"), p = document.getElementById("bellPanel");
   if (!b) return;
-  const n = notifications();
   b.onclick = (ev) => { ev.stopPropagation(); p.classList.toggle("hidden"); b.setAttribute("aria-expanded", String(!p.classList.contains("hidden"))); S.bellOpen = !p.classList.contains("hidden"); };
   if (S.bellOpen) { p.classList.remove("hidden"); b.setAttribute("aria-expanded", "true"); }
   p.onclick = (ev) => ev.stopPropagation();
-  p.querySelectorAll("[data-ack]").forEach((x) => (x.onclick = async () => { try { await n[Number(x.dataset.ack)].ack(); } catch (e) { toast(errText(e), true); } }));
 }
 document.addEventListener("click", () => { const p = document.getElementById("bellPanel"); if (p && !p.classList.contains("hidden")) { p.classList.add("hidden"); S.bellOpen = false; } });
 
@@ -3688,17 +3657,6 @@ function tabWardUnits(body) {
 /* =========================================================
    المرحلة 5ج: التقارير الطبية، الحذف، إيميل التنبيه، إحصائيات الداخلي والعمليات
    ========================================================= */
-
-/* ---------- إيميل تنبيه الـ Red Flag (عن طريق Apps Script) ---------- */
-function sendRedFlagAlert({ name, mr, section, note, diagnosis }) {
-  const url = S.settings?.mailerUrl;
-  if (!url || !/^https:\/\/script\.google\.com\//.test(url)) return;
-  fetch(url, {
-    method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" },
-    body: JSON.stringify({ name, mr: mr || "", section, note: note || "", diagnosis: diagnosis || "",
-      by: S.profile.displayName, hospital: S.settings.hospitalName, link: location.href }),
-  }).catch(() => {});
-}
 
 /* ---------- حذف الدخول الغلط (أدمن) ---------- */
 async function deleteIcuAdmission() {
@@ -4036,11 +3994,4 @@ function printSpecialReports() {
     <h2>3) الوفيات (${deaths.length})</h2>
     ${deaths.length ? `<table><thead><tr><th>المريض</th><th>الرقم الطبي</th><th>القسم</th><th>الدخول</th><th>الوفاة</th><th>الإقامة</th><th>السبب</th></tr></thead><tbody>${deaths.map((x) =>
       `<tr><td>${esc(x.a.patientName)}</td><td class="ltr">${esc(x.a.medicalId || "")}</td><td>${esc(x.sec)}</td><td>${fmtDate(x.a.admitAt)}</td><td>${fmtDateTime(x.a.dischargeAt)}</td><td>${stayDays(x.a)} يوم</td><td>${esc(x.cause || "")}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">لا يوجد</p>`}`, true);
-}
-
-/* ---------- إعداد إيميل التنبيه (في بيانات المستشفى) ---------- */
-function mailerSettingsHtml() {
-  return `<div class="field"><span>رابط إرسال إيميل الـ Red Flag (Apps Script Web App)</span>
-    <input name="mailerUrl" class="ltr" value="${esc(S.settings.mailerUrl || "")}" placeholder="https://script.google.com/macros/s/.../exec">
-    <span class="hint">اختياري. لما يتحط، أي Red Flag جديد بيبعت إيميل للعنوان المكتوب في كود Apps Script. طريقة التجهيز في ملف RedFlagMailer.gs.</span></div>`;
 }
