@@ -369,3 +369,17 @@ table.stats td:first-child,table.stats th:first-child{text-align:start}
 .prev-list{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
 .prev-list a{display:flex;flex-wrap:wrap;align-items:center;gap:10px;text-decoration:none;border:1px solid var(--line);border-radius:10px;padding:7px 12px}
 .prev-list a:hover{border-color:var(--teal);background:var(--teal-soft)}
+
+/* ---------- الحالة السريرية ---------- */
+.panel.clinical{margin-bottom:16px}
+.cl-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.cl-box{border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:#F8FBFA}
+.cl-box span{display:block;font-size:13px;color:var(--muted)}
+.cl-box strong{font-size:18px}
+.cl-box small{display:block;font-size:12.5px;color:var(--muted);font-weight:400}
+.cl-box.hot{background:var(--danger-soft);border-color:#EFC2C2}
+.cl-box.hot strong{color:var(--danger)}
+.cl-hist{margin-top:8px}
+.tag.hot{background:var(--danger-soft);color:var(--danger);border-color:#EFC2C2;font-weight:600}
+.bed-flag{position:absolute;top:50px;inset-inline-end:10px;background:#fff;color:var(--danger);border-radius:999px;padding:0 8px;font-size:12px;font-weight:700}
+@media (max-width:760px){.cl-row{grid-template-columns:1fr}}
