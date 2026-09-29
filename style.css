@@ -431,3 +431,27 @@ tr.day-row td{background:#F6F9F8;font-weight:700}
 .st-card td{padding:4px 0;border-bottom:1px dashed var(--line)}
 .st-card tr:last-child td{border-bottom:0}
 .st-card td.num{text-align:end;font-weight:700;width:48px}
+
+/* ---------- اللوحة الرئيسية ---------- */
+.home-top{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.home-search{display:flex;gap:8px;flex:1;min-width:260px}
+.home-search input{flex:1;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:15.5px;background:#fff}
+.home-search input:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.kpi{background:var(--ink);color:#fff;border-radius:12px;padding:10px 18px;min-width:130px}
+.kpi strong{display:block;font-size:26px;line-height:1.2}
+.kpi span{font-size:13px;color:#A9C4BE}
+.home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:start}
+.home-card .meter{margin:4px 0}
+.big{font-size:26px;font-weight:700;line-height:1}
+.big small{font-size:15px;color:var(--muted);font-weight:500}
+.big.sm{font-size:20px}
+.mini{list-style:none;margin:8px 0 0;padding:0;display:grid}
+.mini li{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:14.5px}
+.mini li:last-child{border-bottom:0}
+.mini li a{text-decoration:none;flex:1}
+.mini li a:hover{text-decoration:underline}
+.mini li span{color:var(--muted);font-size:13.5px}
+.mini li em{font-style:normal;font-size:12px;background:var(--danger-soft);color:var(--danger);border-radius:999px;padding:0 8px}
+.mini li em.hot{font-weight:600}
+.mini.ops li{flex-wrap:wrap}
