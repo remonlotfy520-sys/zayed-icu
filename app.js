@@ -33,7 +33,6 @@ const DEFAULT_UNITS = [
 
 const DEFAULT_FINANCE = ["نفقة", "تأمين", "مجاني", "اقتصادي", "خاص"];
 const listOf = (key) => key.split(".").reduce((o, k) => o?.[k], S.settings) ?? (key === "financeTypes" ? DEFAULT_FINANCE : []);
-const dayWord = (n) => (n === 1 ? "يوم" : n === 2 ? "يومين" : n <= 10 ? `${n} أيام` : `${n} يوم`);
 
 const S = {
   settings: undefined,   // undefined = لسه بيحمل، null = أول تشغيل
@@ -347,6 +346,7 @@ function shell(inner) {
       <a href="#/settings" class="${S.page === "settings" ? "on" : ""}">الإعدادات</a>` : ""}
     </nav>
     <div class="me">
+      <button class="btn ghost sm ${installPrompt ? "" : "hidden"}" id="installBtn">تثبيت التطبيق</button>
       ${bellHtml()}
       <span>${esc(p.displayName)}</span>
       <button class="btn ghost sm" data-act="pw">كلمة المرور</button>
@@ -356,6 +356,7 @@ function shell(inner) {
   <main class="page">${inner}</main>`;
   root.querySelector('[data-act="logout"]').onclick = () => { S._lastHash = null; signOut(auth); };
   root.querySelector('[data-act="pw"]').onclick = openPasswordDialog;
+  document.getElementById("installBtn").onclick = installApp;
   bindBell();
 }
 
@@ -592,6 +593,7 @@ function openAdmissionDialog(unit, bed, preset) {
       <label class="field"><span>رقم التليفون</span><input name="phone" inputmode="tel" class="ltr" value="${esc(preset?.phone || "")}"></label>
     </div>
     <div class="note" id="patientNote"></div>
+    <div id="admDup"></div>
 
     <div class="form-group-title">بيانات الدخول</div>
     <label class="field"><span>تاريخ ووقت الدخول</span>
@@ -725,6 +727,23 @@ function openAdmissionDialog(unit, bed, preset) {
     }
     patient.address = address;
     patient.phone = phone;
+    patient.nameKey = nameKey(patient.name);
+
+    // منع تكرار المريض: لو ملف جديد وفيه مريض بنفس الاسم
+    const isNewFile = mode === "unknown" || (mode === "nid" && !st.existing) || (mode === "newborn" && !f.querySelector('input[name="baby"]:checked')?.value);
+    if (isNewFile && !f.querySelector('input[name="dupOk"]')?.checked) {
+      try {
+        const dups = await findNameDuplicates(patient.name, patientRef.id);
+        if (dups.length) {
+          showDuplicates(document.getElementById("admDup"), dups, (x) => {
+            if (x.currentAdmissionId || x.currentWardId) { toast("المريض ده موجود حالياً في دخول تاني.", true); return; }
+            closeDialog(); setTimeout(() => openAdmissionDialog(unit, bed, x), 0);
+          });
+          err.textContent = "فيه مريض متسجل بنفس الاسم. استخدم ملفه، أو أكّد إنه مريض مختلف.";
+          return;
+        }
+      } catch (e) { console.error(e); }
+    }
 
     const admitAt = f.admitAt.value ? new Date(f.admitAt.value) : null;
     if (!admitAt || isNaN(admitAt)) { err.textContent = "حدد تاريخ ووقت الدخول."; return; }
@@ -757,6 +776,7 @@ function openAdmissionDialog(unit, bed, preset) {
         ctr.icu += 1;
         tx.set(counterRef, { mr: ctr.mr, icu: ctr.icu }, { merge: true });
         if (!pSnap.exists()) { pData.createdAt = serverTimestamp(); pData.createdBy = uid; }
+        pData.visits = arrayUnion(visitEntry("icu", admRef.id, `${medicalId}-R${count}`, Timestamp.fromDate(admitAt), unit.name));
         tx.set(patientRef, pData, { merge: true });
         tx.set(bedRef, { unitId: unit.id, bed, admissionId: admRef.id, since: serverTimestamp() });
         tx.set(admRef, {
@@ -1070,7 +1090,6 @@ function ptInfo() {
     : p.idType === "unknown"
       ? `<dt>الرقم القومي</dt><dd class="muted">غير معروف</dd>`
       : `<dt>الرقم القومي</dt><dd class="ltr">${esc(p.nationalId)}</dd><dt>تاريخ الميلاد</dt><dd>${fmtDate(p.birthDate)}</dd>`;
-  const visits = p.admissionsCount || 1;
   const specs = (a.specialties || []).map((x) => `<span class="pill">${esc(x)}</span>`).join("") || `<span class="muted">لا يوجد</span>`;
   return `
   <div class="file-grid">
@@ -1085,7 +1104,7 @@ function ptInfo() {
         <dt>العنوان</dt><dd>${esc(p.address) || "—"}</dd>
         <dt>التليفون</dt><dd class="ltr">${esc(p.phone) || "—"}</dd>
       </dl>
-      ${visitsHtml(a, p)}
+      ${p.visits?.length ? visitsListHtml(p, a.id) : visitsHtml(a, p)}
     </section>
     <section class="panel">
       <header><h2>بيانات الدخول</h2>${canW ? `<button class="btn ghost sm" data-act="editAdm">تعديل</button>` : ""}</header>
@@ -1674,6 +1693,7 @@ function openEditBasic(a, p) {
       upd.name = `${p.gender === "male" ? "ابن" : "بنت"} ${upd.motherName}`;
     } else upd.name = f.name.value.trim();
     if (!upd.name) { err.textContent = "الاسم مطلوب."; return; }
+    upd.nameKey = nameKey(upd.name);
     try {
       const b = writeBatch(db);
       b.update(doc(db, "patients", a.patientId), upd);
@@ -1726,11 +1746,11 @@ function openEditAdmission(a) {
    الإعدادات (أدمن)
    ========================================================= */
 function renderSettings(tab) {
-  const tabs = [["users", "المستخدمين"], ["units", "وحدات الرعاية"], ["wardunits", "أقسام الداخلي"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["clinical", "قوائم التشخيص والتاريخ"], ["hospital", "بيانات المستشفى"], ["audit", "سجل التعديلات"]];
+  const tabs = [["users", "المستخدمين"], ["units", "وحدات الرعاية"], ["wardunits", "أقسام الداخلي"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["clinical", "قوائم التشخيص والتاريخ"], ["hospital", "بيانات المستشفى"], ["audit", "سجل التعديلات"], ["backup", "نسخة احتياطية"]];
   const nav = `<nav class="tabs">${tabs.map(([k, t]) => `<a href="#/settings/${k}" class="${tab === k ? "on" : ""}">${t}</a>`).join("")}</nav>`;
   shell(nav + `<div id="tabBody"><div class="loading">جاري التحميل…</div></div>`);
   const body = document.getElementById("tabBody");
-  ({ users: tabUsers, units: tabUnits, wardunits: tabWardUnits, vitals: tabVitalFields, lists: tabLists, clinical: tabClinicalLists, hospital: tabHospital, audit: tabAudit }[tab] || tabUsers)(body);
+  ({ users: tabUsers, units: tabUnits, wardunits: tabWardUnits, vitals: tabVitalFields, lists: tabLists, clinical: tabClinicalLists, hospital: tabHospital, audit: tabAudit, backup: tabBackup }[tab] || tabUsers)(body);
 }
 
 /* ---------- المستخدمين ---------- */
@@ -2257,11 +2277,10 @@ function openDischarge() {
         const bedRef = doc(db, "beds", `${cur.unitId}_${cur.bed}`);
         const bSnap = await tx.get(bedRef);
         const pSnap = await tx.get(pRef);
-        let wBed, cs;
+        let wBed;
         if (toWard) {
           wBed = doc(db, "beds", `${toWard.dept}_${toWard.bed}`);
           if ((await tx.get(wBed)).exists()) throw new Error("BED_TAKEN");
-          cs = await tx.get(doc(db, "config", "counters"));
         }
         tx.update(aRef, {
           status: "discharged", dischargeAt: Timestamp.fromDate(at), dischargeType: type, dischargeInfo: info,
@@ -2271,6 +2290,7 @@ function openDischarge() {
         if (bSnap.exists() && bSnap.data().admissionId === a.id) tx.delete(bedRef);
         const pUpd = {};
         if (pSnap.exists() && pSnap.data().currentAdmissionId === a.id) Object.assign(pUpd, { currentAdmissionId: null, lastDischargeAt: Timestamp.fromDate(at) });
+        if (pSnap.exists()) pUpd.visits = visitsAfterDischarge(pSnap.data(), a.id, at, type);
         if (toWard) {
           const pd = pSnap.data();
           const n = (pd.wardCount || 0) + 1;
@@ -2279,6 +2299,7 @@ function openDischarge() {
             { consultant: a.consultant, finance: finHist(a).pop()?.type || a.finance || "", specialties: a.specialties || [], diagnosis: lastDx },
             n, pd.medicalId, { source: "icu", sourceId: a.id }));
           Object.assign(pUpd, { currentWardId: wRef.id, wardCount: (pd.wardCount || 0) + 1 });
+          pUpd.visits.push(visitEntry("ward", wRef.id, `${pd.medicalId || ""}-D${n}`, Timestamp.fromDate(at), wardById(toWard.dept)?.name));
         }
         if (Object.keys(pUpd).length) tx.update(pRef, pUpd);
       });
@@ -2838,6 +2859,7 @@ function patientFormHtml(p, isNew) {
     ${isNew || nb ? `<label class="field ${isNew ? "mf m-newborn" : ""}"><span>اسم الأم</span><input name="motherName" value="${esc(p?.motherName || "")}"></label>` : ""}
     ${isNew || !nb ? `<label class="field ${isNew ? "mf m-nid m-unknown" : ""}"><span>اسم المريض</span><input name="pname" value="${esc(p?.name || "")}"></label>` : ""}
     <label class="field"><span>العنوان</span><input name="address" value="${esc(p?.address || "")}"></label>
+    ${isNew ? `<div id="pfDup"></div>` : ""}
     <div class="row2">
       <label class="field"><span>تليفون 1</span><input name="phone" class="ltr" inputmode="tel" value="${esc(p?.phone || "")}"></label>
       <label class="field"><span>تليفون 2</span><input name="phone2" class="ltr" inputmode="tel" value="${esc(p?.phone2 || "")}"></label>
@@ -2871,7 +2893,19 @@ function openPatientForm(onCreated) {
       ref = doc(collection(db, "patients"));
       data = { idType: "unknown", nationalId: "", name: f.elements.pname.value.trim() || "مجهول الهوية", birthDate, birthDateEstimated: est, gender: f.elements.gender.value, isNewborn: false };
     }
-    Object.assign(data, { address: f.elements.address.value.trim(), phone, phone2 });
+    Object.assign(data, { address: f.elements.address.value.trim(), phone, phone2, nameKey: nameKey(data.name) });
+    const openExisting = (x) => { closeDialog(); if (onCreated) setTimeout(() => onCreated(x), 0); else location.hash = `#/p/${x.id}`; };
+    // الرقم القومي متسجل؟ افتح ملفه على طول
+    const ex = await getDoc(ref);
+    if (ex.exists()) { toast("المريض ده متسجل قبل كده، اتفتح ملفه."); openExisting({ id: ex.id, ...ex.data() }); return; }
+    // نفس الاسم متسجل؟ لازم تختار الملف أو تأكد إنه مريض مختلف
+    if (!f.querySelector('input[name="dupOk"]')?.checked) {
+      const dups = await findNameDuplicates(data.name, ref.id);
+      if (dups.length) {
+        showDuplicates(document.getElementById("pfDup"), dups, openExisting);
+        return "فيه مريض متسجل بنفس الاسم. افتح ملفه، أو أكّد إنه مريض مختلف.";
+      }
+    }
     const counterRef = doc(db, "config", "counters");
     let existed = false;
     await runTransaction(db, async (tx) => {
@@ -2880,7 +2914,7 @@ function openPatientForm(onCreated) {
       const cs = await tx.get(counterRef);
       const mr = (cs.exists() ? cs.data().mr || 1000 : 1000) + 1;
       tx.set(counterRef, { mr }, { merge: true });
-      tx.set(ref, { ...data, medicalId: `MR-${mr}`, admissionsCount: 0, currentAdmissionId: null, ...meta() });
+      tx.set(ref, { ...data, medicalId: `MR-${mr}`, admissionsCount: 0, currentAdmissionId: null, visits: [], ...meta() });
     });
     toast(existed ? "المريض ده متسجل قبل كده، اتفتح ملفه." : "تم تسجيل المريض");
     const snap = await getDoc(ref);
@@ -2911,6 +2945,7 @@ function openPatientEdit(p) {
     if (nb) { upd.motherName = f.elements.motherName.value.trim(); upd.name = `${p.gender === "male" ? "ابن" : "بنت"} ${upd.motherName}`; }
     else upd.name = f.elements.pname.value.trim();
     if (!upd.name.trim()) return "الاسم مطلوب.";
+    upd.nameKey = nameKey(upd.name);
     await updateDoc(doc(db, "patients", p.id), upd);
     // تحديث الاسم على الدخول الحالي (لو الصلاحية تسمح)
     if (p.currentAdmissionId) updateDoc(doc(db, "admissions", p.currentAdmissionId), { patientName: upd.name }).catch(() => {});
@@ -2934,7 +2969,9 @@ async function searchPatients(q) {
   } else if (/^[0-9+\s-]{7,20}$/.test(q)) {
     snaps = [await getDocs(query(col, where("phone", "==", q))), await getDocs(query(col, where("phone2", "==", q)))];
   } else {
-    snaps = [await getDocs(query(col, where("name", ">=", q), where("name", "<=", q + "\uf8ff"), orderBy("name"), limit(30)))];
+    const k = nameKey(q);
+    snaps = await Promise.all([getDocs(query(col, where("nameKey", ">=", k), where("nameKey", "<=", k + "\uf8ff"), orderBy("nameKey"), limit(30))),
+      getDocs(query(col, where("name", ">=", q), where("name", "<=", q + "\uf8ff"), orderBy("name"), limit(30)))]);
   }
   const m = new Map();
   snaps.forEach((s) => s.docs.forEach((d) => m.set(d.id, { id: d.id, ...d.data() })));
@@ -2985,12 +3022,15 @@ function renderPatients() {
     try {
       const list = await searchPatients(S.PQ);
       res.innerHTML = list.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>الاسم</th><th>الرقم الطبي</th><th>السن</th><th>الرقم القومي</th><th>التليفون</th><th>الحالة الآن</th></tr></thead>
+        <thead><tr><th>الاسم</th><th>الرقم الطبي</th><th>السن</th><th>الرقم القومي</th><th>التليفون</th><th>الحالة الآن</th><th></th></tr></thead>
         <tbody>${list.map((p) => `<tr><td><a href="#/p/${p.id}"><strong>${esc(p.name)}</strong></a></td><td class="ltr">${esc(p.medicalId || "—")}</td>
           <td>${esc(ageText(p.birthDate, p.birthDateEstimated)) || "—"}</td><td class="ltr">${esc(p.nationalId || (p.motherNationalId ? `الأم ${p.motherNationalId}` : "—"))}</td>
           <td class="ltr">${esc(p.phone || "—")}</td>
-          <td>${p.currentAdmissionId ? `<span class="dis">في الرعاية</span>` : p.currentWardId ? `<span class="dis t-ward">في الداخلي</span>` : "—"}</td></tr>`).join("")}</tbody></table></div>`
+          <td>${p.currentAdmissionId ? `<span class="dis">في الرعاية</span>` : p.currentWardId ? `<span class="dis t-ward">في الداخلي</span>` : "—"}</td>
+          <td class="nowrap">${(canEdit("icu") || canEdit("ward")) && !p.currentAdmissionId && !p.currentWardId
+            ? `<button class="btn sm" data-admit="${p.id}">${(p.visits || []).length || p.admissionsCount || p.wardCount ? "دخول متكرر" : "دخول"}</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="empty">مفيش نتائج.</div>`;
+      res.querySelectorAll("[data-admit]").forEach((b) => (b.onclick = () => admitChoice(list.find((x) => x.id === b.dataset.admit))));
     } catch (e) { res.innerHTML = `<div class="err">${esc(errText(e))}</div>`; }
   };
   f.onsubmit = (ev) => { ev.preventDefault(); run(); };
@@ -3013,6 +3053,7 @@ function renderPatientHub(pid) {
     };
     try {
       [H.icu, H.ward] = await Promise.all([load("admissions", null, H.p.currentAdmissionId), load("wardAdmissions", null, H.p.currentWardId)]);
+      healVisits(H.p, H.icu, H.ward);
       H.ops = canSee("ops") ? (await getDocs(query(collection(db, "operations"), where("patientId", "==", pid)))).docs.map((d) => ({ id: d.id, ...d.data() })) : [];
       H.reps = canSee("reports") ? (await getDocs(query(collection(db, "medicalReports"), where("patientId", "==", pid)))).docs.map((d) => ({ id: d.id, ...d.data() })) : [];
       H.ds = canSee("reports") || isAdmin() ? (await getDocs(query(collection(db, "dischargeReports"), where("patientId", "==", pid)))).docs.map((d) => ({ id: d.id, ...d.data() })) : [];
@@ -3064,7 +3105,7 @@ function drawHub() {
         <dt>العنوان</dt><dd>${esc(p.address || "—")}</dd>
         <dt>تليفون 1</dt><dd class="ltr">${esc(p.phone || "—")}</dd>
         <dt>تليفون 2</dt><dd class="ltr">${esc(p.phone2 || "—")}</dd>
-      </dl></section>
+      </dl>${visitsListHtml(p)}</section>
     <section class="panel"><header><h2>الرعاية المركزة</h2></header>${loading}
       ${icuRows ? `<ul class="prev-list">${icuRows}</ul>` : `<p class="muted">${S.H.icu === null ? "" : "لا يوجد"}</p>`}${note}</section>
     <section class="panel"><header><h2>الداخلي</h2></header>${loading}
@@ -3214,7 +3255,8 @@ async function createWardAdmission(p, dept, bed, at, d) {
     if (!mr) { c.mr += 1; mr = `MR-${c.mr}`; tx.set(cRef, { mr: c.mr }, { merge: true }); }
     tx.set(bedRef, { unitId: dept, bed, admissionId: wRef.id, section: "ward", since: serverTimestamp() });
     tx.set(wRef, wardAdmissionData({ id: p.id, ...pd }, dept, bed, at, d, num, mr));
-    tx.update(pRef, { currentWardId: wRef.id, medicalId: mr, wardCount: num });
+    tx.update(pRef, { currentWardId: wRef.id, medicalId: mr, wardCount: num,
+      visits: arrayUnion(visitEntry("ward", wRef.id, `${mr}-D${num}`, Timestamp.fromDate(at), wardById(dept)?.name)) });
   });
   audit("دخول داخلي", { adm: { id: wRef.id, patientName: p.name, unitId: dept } });
   return wRef.id;
@@ -3223,11 +3265,13 @@ async function createWardAdmission(p, dept, bed, at, d) {
 /* ---------- صفحة دخول الداخلي ---------- */
 function renderWardAdmission(id) {
   shell(`<div class="loading">جاري التحميل…</div>`);
-  const W = (S.W = { id, a: null, meds: [] });
+  const W = (S.W = { id, a: null, meds: [], p: null });
   const draw = () => { if (S.W === W && S.page === "wadm" && W.a) drawWardAdmission(); };
   S.pageUnsubs.push(onSnapshot(doc(db, "wardAdmissions", id), (s) => {
     if (!s.exists()) { shell(`<div class="empty">الملف غير موجود.</div>`); return; }
-    W.a = { id: s.id, ...s.data() }; draw();
+    W.a = { id: s.id, ...s.data() };
+    if (!W.pSub) { W.pSub = true; S.pageUnsubs.push(onSnapshot(doc(db, "patients", W.a.patientId), (ps) => { W.p = { id: ps.id, ...ps.data() }; draw(); }, () => {})); }
+    draw();
   }, () => shell(`<div class="empty">ليس لديك صلاحية لعرض هذا الملف. الحالات اللي خرجت بتظهر للأدمن فقط. <a href="#/ward">ارجع للداخلي</a></div>`)));
   S.pageUnsubs.push(onSnapshot(collection(db, "wardAdmissions", id, "medlog"), (s) => {
     W.meds = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw();
@@ -3320,7 +3364,8 @@ function drawWardAdmission() {
   <section class="panel stack-gap"><header><h2>الطلبات</h2></header>
     <dl class="kv"><dt>أشعات مطلوبة</dt><dd>${txt(a.xrays)}</dd><dt>تحاليل مطلوبة</dt><dd>${txt(a.labs)}</dd><dt>عروض مطلوبة</dt><dd>${txt(a.requests)}</dd></dl></section>
   <section class="panel stack-gap" id="wMeds"><header><h2>سجل الأدوية</h2></header>${medlogHtml(meds, canW && active)}</section>
-  ${wardMovesHtml(a)}`);
+  ${wardMovesHtml(a)}
+  ${S.W.p?.visits?.length ? `<section class="panel stack-gap">${visitsListHtml(S.W.p, a.id)}</section>` : ""}`);
   bindMedlog(document.getElementById("wMeds"), ["wardAdmissions", a.id]);
   root.querySelector("main").onclick = (ev) => {
     const b = ev.target.closest("[data-w],[data-act]"); if (!b) return;
@@ -3389,7 +3434,7 @@ function openWardDischarge(a) {
         tx.update(wRef, { status: "discharged", dischargeAt: Timestamp.fromDate(at), dischargeType: type, dischargeInfo: info,
           dischargedBy: S.profile.uid, dischargedByName: S.profile.displayName, ...upMeta() });
         if (bs.exists() && bs.data().admissionId === a.id) tx.delete(bRef);
-        if (ps.exists() && ps.data().currentWardId === a.id) tx.update(pRef, { currentWardId: null });
+        if (ps.exists()) tx.update(pRef, { ...(ps.data().currentWardId === a.id ? { currentWardId: null } : {}), visits: visitsAfterDischarge(ps.data(), a.id, at, type) });
       });
       audit(`خروج داخلي: ${WARD_DIS[type]}`, { adm: { id: a.id, patientName: a.patientName, unitId: a.deptId }, details: info });
       toast(`تم تسجيل الخروج (${WARD_DIS[type]})`);
@@ -3689,6 +3734,7 @@ async function deleteIcuAdmission() {
       if (ps.exists()) {
         const pd = ps.data(), upd = {};
         if (pd.currentAdmissionId === a.id) upd.currentAdmissionId = null;
+        if (pd.visits) upd.visits = pd.visits.filter((v) => v.id !== a.id);
         if (a.admissionNo && a.admissionNo === pd.admissionsCount) upd.admissionsCount = Math.max(0, pd.admissionsCount - 1);
         if (Object.keys(upd).length) tx.update(pRef, upd);
       }
@@ -3717,6 +3763,7 @@ async function deleteWardAdmission(a, meds) {
       if (ps.exists()) {
         const pd = ps.data(), upd = {};
         if (pd.currentWardId === a.id) upd.currentWardId = null;
+        if (pd.visits) upd.visits = pd.visits.filter((v) => v.id !== a.id);
         if (a.wardNo && a.wardNo === pd.wardCount) upd.wardCount = Math.max(0, pd.wardCount - 1);
         if (Object.keys(upd).length) tx.update(pRef, upd);
       }
@@ -4067,7 +4114,10 @@ function renderHome() {
   const losHtml = `<section class="panel"><header><h2>إقامة أكثر من 7 أيام</h2><span class="big sm">${ntf.length}</span></header>
     ${ntf.length ? `<ul class="mini">${ntf.sort((x, y) => y.los - x.los).slice(0, 12).map((x) => `<li><a href="${x.href}">${esc(x.name)}</a><span>${x.sec}، ${x.los} يوم</span></li>`).join("")}</ul>`
       : `<p class="muted">لا يوجد.</p>`}</section>`;
-  shell(`
+  const lb = S.settings.lastBackupAt;
+  const bkNote = isAdmin() && (!lb || Date.now() - toDate(lb) > 7 * 864e5)
+    ? `<div class="note" style="margin-bottom:14px">${lb ? `آخر نسخة احتياطية كانت ${fmtDate(lb)}.` : "لسه متعملش أي نسخة احتياطية."} <a href="#/settings/backup">اعمل نسخة دلوقتي</a></div>` : "";
+  shell(bkNote + `
   <div class="home-top">
     <form class="home-search" id="hSearch"><input name="q" placeholder="ابحث عن مريض: الرقم الطبي، أو الرقم القومي، أو التليفون، أو أول الاسم" autocomplete="off"><button class="btn">بحث</button></form>
     ${canEditAny() ? `<button class="btn ghost" id="hNew">تسجيل مريض جديد</button>` : ""}
@@ -4437,4 +4487,224 @@ function renderDischargeReports() {
 function reportsTabs(tab) {
   return `<nav class="tabs"><a href="#/reports" class="${tab === "medical" ? "on" : ""}">التقارير الطبية</a>
     <a href="#/reports/discharge" class="${tab === "discharge" ? "on" : ""}">تقارير الخروج والوفاة</a></nav>`;
+}
+
+/* =========================================================
+   تطبيق الموبايل (PWA) والنسخة الاحتياطية
+   ========================================================= */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
+}
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; refreshInstallBtn(); });
+window.addEventListener("appinstalled", () => { installPrompt = null; refreshInstallBtn(); toast("تم تثبيت التطبيق"); });
+function refreshInstallBtn() {
+  const b = document.getElementById("installBtn");
+  if (b) b.classList.toggle("hidden", !installPrompt);
+}
+async function installApp() {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
+  refreshInstallBtn();
+}
+
+/* ---------- النسخة الاحتياطية (Excel) ---------- */
+function loadXLSX() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = () => res(window.XLSX);
+    s.onerror = () => rej(new Error("تعذر تحميل مكتبة Excel. تأكد من الإنترنت."));
+    document.head.appendChild(s);
+  });
+}
+const XL_HEAD = {
+  _id: "المعرّف", patientName: "اسم المريض", name: "الاسم", medicalId: "الرقم الطبي", nationalId: "الرقم القومي",
+  motherName: "اسم الأم", motherNationalId: "الرقم القومي للأم", birthDate: "تاريخ الميلاد", gender: "النوع", address: "العنوان",
+  phone: "تليفون 1", phone2: "تليفون 2", admissionNumber: "رقم الدخول", admitAt: "تاريخ الدخول", dischargeAt: "تاريخ الخروج",
+  dischargeType: "نوع الخروج", unitId: "الوحدة", deptId: "القسم", bed: "السرير", consultant: "استشاري الحالة",
+  specialties: "التخصصات المشتركة", finance: "المعاملة المالية الحالية", financeHistory: "تاريخ المعاملة المالية",
+  status: "الحالة", diagnosis: "التشخيص", history: "التاريخ المرضي", operation: "العملية", proposedAt: "الميعاد المقترح",
+  doneAt: "ميعاد التنفيذ", anesthesia: "استشاري التخدير", specialty: "التخصص", caseType: "نوع الحالة", number: "الرقم",
+  doctorName: "الطبيب", reportDate: "تاريخ التقرير", createdByName: "سجّله", createdAt: "وقت التسجيل", updatedAt: "آخر تعديل",
+  updatedByName: "عدّله", dischargedByName: "سجّل الخروج", at: "الوقت", kind: "النوع", text: "النص", los: "أيام الإقامة",
+};
+const XL_DROP = new Set(["createdBy", "updatedBy", "dischargedBy", "resultBy", "givenBy", "adminUid", "logo", "birthDateEstimated", "isNewborn"]);
+function xlDate(d) { return `${isoDay(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function xlVal(v) {
+  if (v == null) return "";
+  if (v?.toDate) return xlDate(v.toDate());
+  if (Array.isArray(v)) return v.map((x) => (x && typeof x === "object" ? xlObj(x) : String(x))).join(" | ");
+  if (typeof v === "object") return xlObj(v);
+  return v;
+}
+const xlObj = (o) => Object.entries(o).filter(([k]) => !XL_DROP.has(k)).map(([k, x]) => `${k}: ${x?.toDate ? xlDate(x.toDate()) : typeof x === "object" && x ? JSON.stringify(x) : x}`).join("، ");
+function xlRows(list, map = {}) {
+  return list.map((r) => {
+    const o = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (XL_DROP.has(k)) continue;
+      let val = map[k] ? map[k](v, r) : xlVal(v);
+      if (typeof val === "string" && val.length > 32000) val = val.slice(0, 32000) + "…";
+      o[XL_HEAD[k] || k] = val;
+    }
+    return o;
+  });
+}
+
+function tabBackup(body) {
+  const last = S.settings.lastBackupAt;
+  body.innerHTML = `
+  <div class="settings-block" style="max-width:640px">
+    <div class="toolbar"><h2>نسخة احتياطية</h2></div>
+    <p>بتنزل ملف Excel فيه كل بيانات البرنامج، كل نوع في شيت لوحده: المرضى، ودخول الرعاية، ودخول الداخلي، والعمليات، والتقارير الطبية، وتقارير الخروج، والمستخدمين (من غير كلمات المرور)، وآخر 2000 عملية في سجل التعديلات.</p>
+    <p class="${last ? "muted" : "note"}">${last ? `آخر نسخة: ${fmtDateTime(last)}` : "لسه متعملش أي نسخة احتياطية."}</p>
+    <div class="checks"><label><input type="checkbox" id="bkFull"> تضمين ملفات المتابعة كاملة (العلامات الحيوية، والعلاج، والتشخيصات، وسجلات الأدوية)</label></div>
+    <p class="hint">الاختيار ده بيقرأ بيانات أكتر بكتير وبياخد وقت أطول، واستخدامه مرة في الأسبوع كفاية.</p>
+    <div class="actions"><button class="btn" id="bkRun">تنزيل النسخة الاحتياطية</button></div>
+    <div id="bkLog" class="by-line" style="margin-top:10px"></div>
+  </div>`;
+  document.getElementById("bkRun").onclick = async (ev) => {
+    const btn = ev.currentTarget; btn.disabled = true;
+    const log = (t) => (document.getElementById("bkLog").textContent = t);
+    try { await runBackup(document.getElementById("bkFull").checked, log); }
+    catch (e) { log(""); toast(e.message?.startsWith("تعذر") ? e.message : errText(e), true); }
+    btn.disabled = false;
+  };
+}
+
+async function runBackup(full, log) {
+  log("جاري تحميل مكتبة Excel…");
+  const XLSX = await loadXLSX();
+  const get = async (name, label) => { log(`جاري قراءة ${label}…`); return (await getDocs(collection(db, name))).docs.map((d) => ({ _id: d.id, ...d.data() })); };
+  const unitMap = { unitId: (v) => unitName(v), dischargeType: (v) => DIS_TYPES[v] || v || "", gender: (v) => genderText(v) };
+  const wardMap = { deptId: (v) => wardById(v)?.name || v, dischargeType: (v) => WARD_DIS[v] || v || "", gender: (v) => genderText(v) };
+  const patients = await get("patients", "المرضى");
+  const icu = await get("admissions", "دخول الرعاية");
+  const ward = await get("wardAdmissions", "دخول الداخلي");
+  const ops = await get("operations", "العمليات");
+  const reports = await get("medicalReports", "التقارير الطبية");
+  const ds = await get("dischargeReports", "تقارير الخروج");
+  const users = await get("users", "المستخدمين");
+  log("جاري قراءة سجل التعديلات…");
+  const audits = (await getDocs(query(collection(db, "audit"), orderBy("at", "desc"), limit(2000)))).docs.map((d) => ({ _id: d.id, ...d.data() }));
+  const sheets = [
+    ["المرضى", xlRows(patients, { gender: (v) => genderText(v) })],
+    ["دخول الرعاية", xlRows(icu.map((a) => ({ ...a, los: stayDays(a), financeDays: finText(finBreakdown(a)) })), unitMap)],
+    ["دخول الداخلي", xlRows(ward.map((a) => ({ ...a, los: stayDays(a), financeDays: finText(finBreakdown(a)) })), wardMap)],
+    ["العمليات", xlRows(ops, { status: (v) => OP_STATUS[v] || v })],
+    ["التقارير الطبية", xlRows(reports)],
+    ["تقارير الخروج", xlRows(ds, { gender: (v) => genderText(v) })],
+    ["المستخدمين", xlRows(users.map(({ sections, ...u }) => ({ ...u, sections: Object.entries(sections || {}).map(([k, v]) => `${SECTIONS[k] || k}: ${LEVELS[v] || v}`).join("، ") })))],
+    ["سجل التعديلات", xlRows(audits)],
+  ];
+  if (full) {
+    const sub = { entries: [], vitals: [], meds: [], wardMeds: [], opMeds: [] };
+    for (let i = 0; i < icu.length; i++) {
+      const a = icu[i];
+      log(`جاري قراءة ملفات المتابعة (${i + 1} من ${icu.length})…`);
+      for (const k of ["entries", "vitals", "meds"]) {
+        (await getDocs(collection(db, "admissions", a._id, k))).forEach((d) => sub[k].push({ admissionNumber: a.admissionNumber || a._id, patientName: a.patientName, ...d.data() }));
+      }
+    }
+    for (let i = 0; i < ward.length; i++) {
+      log(`جاري قراءة أدوية الداخلي (${i + 1} من ${ward.length})…`);
+      (await getDocs(collection(db, "wardAdmissions", ward[i]._id, "medlog"))).forEach((d) => sub.wardMeds.push({ admissionNumber: ward[i].admissionNumber, patientName: ward[i].patientName, ...d.data() }));
+    }
+    for (let i = 0; i < ops.length; i++) {
+      log(`جاري قراءة أدوية العمليات (${i + 1} من ${ops.length})…`);
+      (await getDocs(collection(db, "operations", ops[i]._id, "medlog"))).forEach((d) => sub.opMeds.push({ number: ops[i].number, patientName: ops[i].patientName, ...d.data() }));
+    }
+    const vit = sub.vitals.map(({ values, ...r }) => ({ ...r, ...Object.fromEntries(Object.entries(values || {}).map(([k, v]) => [`قراءة: ${k}`, v])) }));
+    sheets.push(["رعاية - الحالة والتشخيص", xlRows(sub.entries)], ["رعاية - العلامات الحيوية", xlRows(vit)],
+      ["رعاية - العلاج", xlRows(sub.meds)], ["داخلي - الأدوية", xlRows(sub.wardMeds)], ["عمليات - الأدوية", xlRows(sub.opMeds)]);
+  }
+  log("جاري تجهيز الملف…");
+  const wb = XLSX.utils.book_new();
+  wb.Workbook = { Views: [{ RTL: true }] };
+  for (const [name, rows] of sheets) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ "": "لا يوجد بيانات" }]), name);
+  const fname = `نسخة-احتياطية-${isoDay(new Date())}${full ? "-كاملة" : ""}.xlsx`;
+  XLSX.writeFile(wb, fname);
+  await updateDoc(doc(db, "config", "settings"), { lastBackupAt: Timestamp.now() });
+  audit(full ? "نسخة احتياطية كاملة" : "نسخة احتياطية", { adm: { id: "", patientName: "", unitId: "" } });
+  log(`تم تنزيل ${fname}. احفظه في مكان آمن برة الجهاز ده (Google Drive مثلاً).`);
+}
+
+/* =========================================================
+   منع تكرار المرضى، الدخول المتكرر، وسجل مرات الدخول
+   ========================================================= */
+// توحيد الاسم للمقارنة: أ/إ/آ = ا، ة = ه، ى = ي، من غير تشكيل ومسافات زيادة
+function nameKey(n) {
+  return String(n || "").replace(/[\u064B-\u0652\u0640]/g, "").replace(/[أإآٱ]/g, "ا").replace(/ة/g, "ه")
+    .replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي").replace(/\s+/g, " ").trim().toLowerCase();
+}
+async function findNameDuplicates(name, excludeId) {
+  const key = nameKey(name);
+  if (!key || key === nameKey("مجهول الهوية")) return [];
+  const col = collection(db, "patients");
+  const [a, b] = await Promise.all([getDocs(query(col, where("nameKey", "==", key))), getDocs(query(col, where("name", "==", String(name).trim())))]);
+  const m = new Map();
+  [a, b].forEach((s) => s.docs.forEach((d) => { if (d.id !== excludeId) m.set(d.id, { id: d.id, ...d.data() }); }));
+  return [...m.values()];
+}
+// بيعرض المرضى المسجلين بنفس الاسم جوه النموذج، ومعاهم زرار "استخدم الملف ده"
+function showDuplicates(box, list, onUse) {
+  box.innerHTML = `<div class="dup-box">
+    <strong>فيه ${list.length === 1 ? "مريض متسجل" : `${list.length} مرضى متسجلين`} بنفس الاسم:</strong>
+    <ul class="pick-list">${list.map((p) => `<li><button type="button" data-use="${p.id}">${patientLine(p)}
+      ${p.currentAdmissionId ? `<span class="dis">في الرعاية الآن</span>` : p.currentWardId ? `<span class="dis t-ward">في الداخلي الآن</span>` : ""}
+      <span class="use">استخدم الملف ده</span></button></li>`).join("")}</ul>
+    <div class="checks"><label><input type="checkbox" name="dupOk"> ده مريض مختلف بنفس الاسم، سجّله ملف جديد</label></div></div>`;
+  box.querySelectorAll("[data-use]").forEach((b) => (b.onclick = () => onUse(list.find((x) => x.id === b.dataset.use))));
+}
+
+const visitEntry = (type, id, number, admitAt, place) => ({ type, id, number: number || "", admitAt, place: place || "", dischargeAt: null, dischargeType: "" });
+const visitsAfterDischarge = (pd, id, at, type) => (pd?.visits || []).map((v) => (v.id === id ? { ...v, dischargeAt: Timestamp.fromDate(at), dischargeType: type } : v));
+
+function visitsListHtml(p, curId) {
+  const v = [...(p?.visits || [])].sort((x, y) => toDate(y.admitAt) - toDate(x.admitAt));
+  if (!v.length) return "";
+  return `<div class="visit-hist"><h3>مرات الدخول (${v.length})</h3><ul class="prev-list">${v.map((x) => {
+    const href = x.type === "icu" ? `#/patient/${x.id}` : `#/w/${x.id}`;
+    const canOpen = x.id !== curId && (isAdmin() || !x.dischargeAt);
+    const types = x.type === "icu" ? DIS_TYPES : WARD_DIS;
+    const inner = `<strong>${fmtDate(x.admitAt)}</strong><span>${x.type === "icu" ? "رعاية" : "داخلي"}: ${esc(x.place)}</span>
+      <span class="ltr muted">${esc(x.number)}</span>
+      <span class="by-line">${x.dischargeAt ? `خروج ${fmtDate(x.dischargeAt)}، ${types[x.dischargeType] || ""}` : "موجود حالياً"}</span>
+      ${x.id === curId ? `<span class="pill">الدخول ده</span>` : ""}`;
+    return `<li>${canOpen ? `<a href="${href}">${inner}</a>` : `<div class="pv">${inner}</div>`}</li>`;
+  }).join("")}</ul></div>`;
+}
+
+// إصلاح سجل الدخولات للمرضى القدام (الأدمن بس، من ملف المريض الشامل)
+async function healVisits(p, icu, ward) {
+  if (!isAdmin() || !icu || !ward) return;
+  const built = [
+    ...icu.map((a) => ({ ...visitEntry("icu", a.id, a.admissionNumber, a.admitAt, unitName(a.unitId)), dischargeAt: a.dischargeAt || null, dischargeType: a.dischargeType || "" })),
+    ...ward.map((a) => ({ ...visitEntry("ward", a.id, a.admissionNumber, a.admitAt, wardById(a.deptId)?.name), dischargeAt: a.dischargeAt || null, dischargeType: a.dischargeType || "" })),
+  ];
+  const same = (p.visits || []).length === built.length && built.every((b) => (p.visits || []).some((v) => v.id === b.id && !!v.dischargeAt === !!b.dischargeAt));
+  const upd = {};
+  if (!same) upd.visits = built;
+  if (!p.nameKey) upd.nameKey = nameKey(p.name);
+  if (Object.keys(upd).length) await updateDoc(doc(db, "patients", p.id), upd).catch(() => {});
+}
+
+// زرار الدخول / الدخول المتكرر من نتايج البحث
+function admitChoice(p) {
+  if (p.currentAdmissionId || p.currentWardId) { toast("المريض ده موجود حالياً في دخول، ولازم يخرج الأول.", true); return; }
+  const icu = canEdit("icu") && visibleUnits().some((u) => canWriteUnit(u.id));
+  const ward = canEdit("ward") && wardUnits().length > 0;
+  if (icu && !ward) return chooseIcuBed(p);
+  if (ward && !icu) return openWardAdmission(p);
+  const again = (p.visits || []).length || p.admissionsCount || p.wardCount;
+  openDialog(`<div class="form"><header class="dlg-head"><h3>${again ? "دخول متكرر" : "دخول"}: ${esc(p.name)}</h3><p class="ltr">${esc(p.medicalId || "")}</p></header>
+    ${visitsListHtml(p)}
+    <div class="actions"><button class="btn" id="acIcu">دخول رعاية</button><button class="btn" id="acWard">دخول داخلي</button>
+    <button type="button" class="btn ghost" data-close>إلغاء</button></div></div>`);
+  document.getElementById("acIcu").onclick = () => { closeDialog(); setTimeout(() => chooseIcuBed(p), 0); };
+  document.getElementById("acWard").onclick = () => { closeDialog(); setTimeout(() => openWardAdmission(p), 0); };
 }
