@@ -248,13 +248,13 @@ function subscribeAdmissions() {
     const q = query(collection(db, "admissions"), where("unitId", "==", u.id), where("status", "==", "active"));
     S.admUnsubs.push(onSnapshot(q, (snap) => {
       S.adm[u.id] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      if (S.page === "dashboard") renderDashboard(); else refreshBell();
+      liveRefresh();
     }, (e) => console.error("admissions", u.id, e)));
   }
 }
 
 // تحديث عداد الأيام كل 5 دقائق
-setInterval(() => { if (S.page === "dashboard") renderDashboard(); else if (S.page === "ward") renderWard(S.wardFilter); else refreshBell(); }, 5 * 60e3);
+setInterval(() => liveRefresh(), 5 * 60e3);
 
 /* =========================================================
    التنقل
@@ -277,16 +277,14 @@ function route() {
   const newKey = location.hash;
   // لو نفس الصفحة ومفيش غير تحديث بيانات، متعيدش فتح المستمعين
   if (S._lastHash === newKey && S.page && S.page !== "login" && S.page !== "setup") {
-    if (S.page === "dashboard") renderDashboard();
-    else if (S.page === "ward") renderWard(S.wardFilter);
-    else refreshBell();
+    liveRefresh();
     return;
   }
   S._lastHash = newKey;
   cleanupPage();
 
-  if (page === "" && !canSee("icu")) {
-    location.hash = canSee("ward") ? "#/ward" : "#/patients";
+  if (page === "" || page === "home") {
+    S.page = "home"; renderHome();
   } else if (page === "patients") {
     S.page = "patients"; renderPatients();
   } else if (page === "p" && parts[1]) {
@@ -303,7 +301,7 @@ function route() {
     S.page = "ops"; renderOps();
   } else if (page === "o" && parts[1] && canSee("ops")) {
     S.page = "op"; renderOperation(parts[1]);
-  } else if (page === "" || page === "unit") {
+  } else if ((page === "icu" || page === "unit") && canSee("icu")) {
     S.page = "dashboard";
     S.unitFilter = page === "unit" ? parts[1] : null;
     renderDashboard();
@@ -315,7 +313,9 @@ function route() {
     renderStats();
   } else if (page === "archive" && isAdmin()) {
     S.page = "archive";
-    renderArchive();
+    if (parts[1] === "ward") renderWardArchive();
+    else if (parts[1] === "ops") renderOpsArchive();
+    else renderArchive();
   } else if (page === "settings" && isAdmin()) {
     S.page = "settings";
     renderSettings(parts[1] || "users");
@@ -333,8 +333,9 @@ function shell(inner) {
       <span><strong>${esc(s.hospitalName)}</strong><small>نظام المستشفى</small></span>
     </a>
     <nav class="nav">
+      <a href="#/" class="${S.page === "home" ? "on" : ""}">الرئيسية</a>
       <a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>
-      ${canSee("icu") ? `<a href="#/" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
+      ${canSee("icu") ? `<a href="#/icu" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
       ${canSee("ward") ? `<a href="#/ward" class="${["ward", "wadm"].includes(S.page) ? "on" : ""}">الداخلي</a>` : ""}
       ${canSee("ops") ? `<a href="#/ops" class="${["ops", "op"].includes(S.page) ? "on" : ""}">العمليات</a>` : ""}
       ${canSee("reports") ? `<a href="#/reports" class="${["reports", "report"].includes(S.page) ? "on" : ""}">التقارير الطبية</a>` : ""}
@@ -480,7 +481,7 @@ function renderDashboard() {
   }
   const sel = S.unitFilter;
   const shown = sel ? list.filter((u) => u.id === sel) : list;
-  if (sel && !shown.length) { location.hash = "#/"; return; }
+  if (sel && !shown.length) { location.hash = "#/icu"; return; }
 
   const stat = (u) => {
     const occ = (S.adm[u.id] || []).length;
@@ -491,7 +492,7 @@ function renderDashboard() {
 
   const chips = `
     <nav class="unit-bar" aria-label="الوحدات">
-      <a href="#/" class="chip ${!sel ? "on" : ""}">كل الوحدات <b>${tOcc}/${tBeds}</b></a>
+      <a href="#/icu" class="chip ${!sel ? "on" : ""}">كل الوحدات <b>${tOcc}/${tBeds}</b></a>
       ${list.map((u) => { const s = stat(u); return `<a href="#/unit/${u.id}" class="chip ${sel === u.id ? "on" : ""}">${esc(u.name)} <b>${s.occ}/${s.total}</b></a>`; }).join("")}
     </nav>`;
 
@@ -2353,8 +2354,7 @@ async function openTransfer() {
 /* ---------- الأرشيف (أدمن) ---------- */
 function renderArchive() {
   const A = (S.A ||= { from: isoDay(new Date(Date.now() - 30 * 864e5)), to: isoDay(new Date()), unit: "", type: "", q: "" });
-  shell(`
-  <div class="toolbar"><h2>الأرشيف</h2></div>
+  shell(archiveTabs("icu") + `
   <form class="filters" id="arcF">
     <label class="field"><span>خروج من</span><input type="date" name="from" value="${A.from}"></label>
     <label class="field"><span>إلى</span><input type="date" name="to" value="${A.to}"></label>
@@ -3273,7 +3273,7 @@ function drawWardAdmission() {
     </div>
     <div class="file-actions">
       ${canW ? `<button class="btn ghost" data-w="edit">تعديل</button>` : ""}
-      ${active && canEdit("ward") ? `<button class="btn danger" data-w="discharge">خروج</button>` : ""}
+      ${active && canEdit("ward") ? `<button class="btn ghost" data-w="transfer">نقل</button><button class="btn danger" data-w="discharge">خروج</button>` : ""}
       ${canEditAny() ? `<button class="btn ghost" data-w="band">بطاقة تعريف</button>` : ""}
       ${canPrint() ? `<button class="btn ghost" data-w="print">طباعة / PDF</button>` : ""}
       ${canEdit("reports") ? `<button class="btn ghost" data-w="report">تقرير طبي</button>` : ""}
@@ -3306,14 +3306,15 @@ function drawWardAdmission() {
       <dl class="kv"><dt>التشخيص</dt><dd>${txt(a.diagnosis)}</dd><dt>التاريخ المرضي</dt><dd>${txt(a.history)}</dd></dl></section>` : ""}
   <section class="panel stack-gap"><header><h2>الطلبات</h2></header>
     <dl class="kv"><dt>أشعات مطلوبة</dt><dd>${txt(a.xrays)}</dd><dt>تحاليل مطلوبة</dt><dd>${txt(a.labs)}</dd><dt>عروض مطلوبة</dt><dd>${txt(a.requests)}</dd></dl></section>
-  <section class="panel stack-gap" id="wMeds"><header><h2>سجل الأدوية</h2></header>${medlogHtml(meds, canW && active)}</section>`);
+  <section class="panel stack-gap" id="wMeds"><header><h2>سجل الأدوية</h2></header>${medlogHtml(meds, canW && active)}</section>
+  ${wardMovesHtml(a)}`);
   bindMedlog(document.getElementById("wMeds"), ["wardAdmissions", a.id]);
   root.querySelector("main").onclick = (ev) => {
     const b = ev.target.closest("[data-w],[data-act]"); if (!b) return;
     if (b.dataset.act === "finChange") return openFinanceChange(a, "wardAdmissions");
     if (b.dataset.act === "finDel") return deleteFinance(b.dataset.from, a, "wardAdmissions");
     ({ edit: () => openWardEdit(a), discharge: () => openWardDischarge(a), band: () => printWristbandFor({ ...a, name: a.patientName }, `${u.name}، سرير ${a.bed}`), print: () => printWard(a, meds),
-      report: () => openReportForm({ type: "ward", adm: a }), del: () => deleteWardAdmission(a, meds) })[b.dataset.w]?.();
+      report: () => openReportForm({ type: "ward", adm: a }), del: () => deleteWardAdmission(a, meds), transfer: () => openWardTransfer(a) })[b.dataset.w]?.();
   };
 }
 
@@ -3615,11 +3616,11 @@ function subscribeSections() {
   S.wardActive = null; S.opsUpcoming = [];
   if (canSee("ward")) wardUnsub = onSnapshot(query(collection(db, "wardAdmissions"), where("status", "==", "active")), (s) => {
     S.wardActive = s.docs.map((d) => ({ id: d.id, ...d.data() }));
-    if (S.page === "ward") renderWard(S.wardFilter); else refreshBell();
+    liveRefresh();
   }, (e) => console.error("ward", e));
   if (canSee("ops")) opsUnsub = onSnapshot(query(collection(db, "operations"), where("status", "==", "scheduled")), (s) => {
     S.opsUpcoming = s.docs.map((d) => ({ id: d.id, ...d.data() }));
-    refreshBell();
+    liveRefresh();
   }, (e) => console.error("ops", e));
 }
 
@@ -3994,4 +3995,200 @@ function printSpecialReports() {
     <h2>3) الوفيات (${deaths.length})</h2>
     ${deaths.length ? `<table><thead><tr><th>المريض</th><th>الرقم الطبي</th><th>القسم</th><th>الدخول</th><th>الوفاة</th><th>الإقامة</th><th>السبب</th></tr></thead><tbody>${deaths.map((x) =>
       `<tr><td>${esc(x.a.patientName)}</td><td class="ltr">${esc(x.a.medicalId || "")}</td><td>${esc(x.sec)}</td><td>${fmtDate(x.a.admitAt)}</td><td>${fmtDateTime(x.a.dischargeAt)}</td><td>${stayDays(x.a)} يوم</td><td>${esc(x.cause || "")}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">لا يوجد</p>`}`, true);
+}
+
+/* =========================================================
+   المرحلة 6: اللوحة الرئيسية، أرشيف الداخلي والعمليات، نقل مريض الداخلي
+   ========================================================= */
+function liveRefresh() {
+  if (S.page === "dashboard") renderDashboard();
+  else if (S.page === "ward") renderWard(S.wardFilter);
+  else if (S.page === "home") renderHome();
+  else refreshBell();
+}
+
+/* ---------- اللوحة الرئيسية ---------- */
+function renderHome() {
+  const today = isoDay(new Date());
+  const occCard = (title, href, groups) => {
+    const tot = groups.reduce((s, g) => s + g.total, 0), occ = groups.reduce((s, g) => s + g.occ, 0);
+    const pct = tot ? Math.round((occ / tot) * 100) : 0;
+    return `<section class="panel home-card">
+      <header><h2><a href="${href}" class="plain">${title}</a></h2><span class="big">${occ}<small>/${tot}</small></span></header>
+      <div class="meter"><i style="width:${pct}%"></i></div>
+      <p class="by-line">${tot - occ} سرير فاضي، إشغال ${pct}%</p>
+      <ul class="mini">${groups.map((g) => `<li><a href="${g.href}">${esc(g.name)}</a><span>${g.occ}/${g.total}</span>${g.extra || ""}</li>`).join("")}</ul>
+    </section>`;
+  };
+  let cards = "";
+  const kpis = [];
+  if (canSee("icu")) {
+    const us = visibleUnits();
+    const all = us.flatMap((u) => S.adm[u.id] || []);
+    cards += occCard("الرعاية المركزة", "#/icu", us.map((u) => {
+      const list = S.adm[u.id] || [];
+      const vent = list.filter((a) => a.clinical?.resp === "vent").length;
+      return { name: u.name, href: `#/unit/${u.id}`, occ: list.length, total: u.beds, extra: vent ? `<em>${vent} فنت</em>` : "" };
+    }));
+    kpis.push([all.filter((a) => a.clinical?.resp === "vent").length, "على جهاز تنفس"],
+      [all.filter((a) => isoDay(toDate(a.admitAt)) === today).length, "دخول رعاية النهارده"]);
+  }
+  if (canSee("ward") && wardUnits().length) {
+    const act = S.wardActive || [];
+    cards += occCard("الداخلي", "#/ward", wardUnits().map((u) => ({ name: u.name, href: `#/ward/${u.id}`, occ: act.filter((a) => a.deptId === u.id).length, total: u.beds })));
+    kpis.push([act.filter((a) => isoDay(toDate(a.admitAt)) === today).length, "دخول داخلي النهارده"]);
+  }
+  let opsHtml = "";
+  if (canSee("ops")) {
+    const todays = (S.opsUpcoming || []).filter((o) => isoDay(toDate(o.proposedAt)) === today).sort((x, y) => toDate(x.proposedAt) - toDate(y.proposedAt));
+    const tomorrow = (S.opsUpcoming || []).filter((o) => isoDay(toDate(o.proposedAt)) === addDays(today, 1)).length;
+    kpis.push([todays.length, "عمليات النهارده"]);
+    opsHtml = `<section class="panel"><header><h2><a href="#/ops" class="plain">عمليات النهارده</a></h2><span class="by-line">بكرة: ${tomorrow}</span></header>
+      ${todays.length ? `<ul class="mini ops">${todays.map((o) => `<li><a href="#/o/${o.id}"><strong>${fmtTime(o.proposedAt)}</strong> ${esc(o.operation)}</a>
+        <span>${esc(o.patientName)}${o.caseType === "طوارئ" ? ` <em class="hot">طوارئ</em>` : ""}</span></li>`).join("")}</ul>` : `<p class="muted">مفيش عمليات مجدولة النهارده.</p>`}</section>`;
+  }
+  const ntf = notifications().filter((x) => x.kind === "los");
+  const losHtml = `<section class="panel"><header><h2>إقامة أكثر من 7 أيام</h2><span class="big sm">${ntf.length}</span></header>
+    ${ntf.length ? `<ul class="mini">${ntf.sort((x, y) => y.los - x.los).slice(0, 12).map((x) => `<li><a href="${x.href}">${esc(x.name)}</a><span>${x.sec}، ${x.los} يوم</span></li>`).join("")}</ul>`
+      : `<p class="muted">لا يوجد.</p>`}</section>`;
+  shell(`
+  <div class="home-top">
+    <form class="home-search" id="hSearch"><input name="q" placeholder="ابحث عن مريض: الرقم الطبي، أو الرقم القومي، أو التليفون، أو أول الاسم" autocomplete="off"><button class="btn">بحث</button></form>
+    ${canEditAny() ? `<button class="btn ghost" id="hNew">تسجيل مريض جديد</button>` : ""}
+  </div>
+  ${kpis.length ? `<div class="kpis">${kpis.map(([n, l]) => `<div class="kpi"><strong>${n}</strong><span>${l}</span></div>`).join("")}</div>` : ""}
+  <div class="home-grid">${cards}${opsHtml}${losHtml}</div>`);
+  const f = document.getElementById("hSearch");
+  f.onsubmit = (ev) => { ev.preventDefault(); S.PQ = f.elements.q.value.trim(); location.hash = "#/patients"; };
+  document.getElementById("hNew")?.addEventListener("click", () => openPatientForm());
+}
+
+/* ---------- أرشيف الداخلي والعمليات ---------- */
+function archiveTabs(tab) {
+  return `<nav class="tabs"><a href="#/archive" class="${tab === "icu" ? "on" : ""}">الرعاية المركزة</a>
+    <a href="#/archive/ward" class="${tab === "ward" ? "on" : ""}">الداخلي</a>
+    <a href="#/archive/ops" class="${tab === "ops" ? "on" : ""}">العمليات</a></nav>`;
+}
+
+function renderWardArchive() {
+  const A = (S.AW ||= { from: isoDay(new Date(Date.now() - 30 * 864e5)), to: isoDay(new Date()), dept: "", type: "", q: "" });
+  shell(archiveTabs("ward") + `
+  <form class="filters" id="awF">
+    <label class="field"><span>خروج من</span><input type="date" name="from" value="${A.from}"></label>
+    <label class="field"><span>إلى</span><input type="date" name="to" value="${A.to}"></label>
+    <label class="field"><span>القسم</span><select name="dept"><option value="">كل الأقسام</option>${wardUnits().map((u) => `<option value="${u.id}" ${A.dept === u.id ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+    <label class="field"><span>نوع الخروج</span><select name="type"><option value="">الكل</option>${Object.entries(WARD_DIS).map(([k, l]) => `<option value="${k}" ${A.type === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    <label class="field grow"><span>بحث بالاسم أو الرقم القومي أو الرقم الطبي</span><input name="q" value="${esc(A.q)}"></label>
+    <button class="btn">عرض</button>
+  </form><div id="awBody"><div class="loading">جاري التحميل…</div></div>`);
+  const f = document.getElementById("awF");
+  const load = async () => {
+    Object.assign(A, { from: f.elements.from.value, to: f.elements.to.value, dept: f.elements.dept.value, type: f.elements.type.value, q: f.elements.q.value.trim() });
+    const body = document.getElementById("awBody");
+    try {
+      const col = collection(db, "wardAdmissions");
+      let rows;
+      if (/^mr-?\d+$/i.test(A.q)) rows = (await getDocs(query(col, where("medicalId", "==", "MR-" + A.q.replace(/\D/g, ""))))).docs;
+      else if (/^\d{14}$/.test(A.q)) rows = (await getDocs(query(col, where("nationalId", "==", A.q)))).docs;
+      else rows = (await getDocs(query(col, where("dischargeAt", ">=", Timestamp.fromDate(new Date(A.from + "T00:00:00"))),
+        where("dischargeAt", "<=", Timestamp.fromDate(new Date(A.to + "T23:59:59"))), orderBy("dischargeAt", "desc")))).docs;
+      rows = rows.map((d) => ({ id: d.id, ...d.data() })).filter((r) => r.status === "discharged");
+      if (A.q && !/^mr-?\d+$/i.test(A.q) && !/^\d{14}$/.test(A.q)) rows = rows.filter((r) => (r.patientName || "").includes(A.q));
+      if (A.dept) rows = rows.filter((r) => r.deptId === A.dept);
+      if (A.type) rows = rows.filter((r) => r.dischargeType === A.type);
+      rows.sort((x, y) => toDate(y.dischargeAt) - toDate(x.dischargeAt));
+      body.innerHTML = rows.length ? `
+        <div class="arc-sum"><span><b>${rows.length}</b> حالة</span>${Object.entries(WARD_DIS).map(([k, l]) => { const n = rows.filter((r) => r.dischargeType === k).length; return n ? `<span class="dis"><b>${n}</b> ${l}</span>` : ""; }).join("")}</div>
+        <div class="table-wrap"><table><thead><tr><th>الاسم</th><th>رقم الدخول</th><th>القسم</th><th>الدخول</th><th>الخروج</th><th>الإقامة</th><th>نوع الخروج</th><th>المعاملة المالية</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr><td><a href="#/w/${r.id}"><strong>${esc(r.patientName)}</strong></a></td><td class="ltr">${esc(r.admissionNumber || "")}</td>
+          <td>${esc(wardById(r.deptId)?.name || "")}</td><td>${fmtDate(r.admitAt)}</td><td>${fmtDateTime(r.dischargeAt)}</td><td>${stayDays(r)} يوم</td>
+          <td>${WARD_DIS[r.dischargeType] || ""}</td><td>${esc(finText(finBreakdown(r)))}</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="empty">لا يوجد حالات بالشروط دي.</div>`;
+    } catch (e) { body.innerHTML = `<div class="err">${esc(errText(e))}</div>`; }
+  };
+  f.onsubmit = (ev) => { ev.preventDefault(); load(); };
+  load();
+}
+
+function renderOpsArchive() {
+  const A = (S.AO ||= { from: isoDay(new Date(Date.now() - 30 * 864e5)), to: isoDay(new Date()), status: "", q: "" });
+  shell(archiveTabs("ops") + `
+  <form class="filters" id="aoF">
+    <label class="field"><span>من</span><input type="date" name="from" value="${A.from}"></label>
+    <label class="field"><span>إلى</span><input type="date" name="to" value="${A.to}"></label>
+    <label class="field"><span>الحالة</span><select name="status"><option value="">الكل</option>${Object.entries(OP_STATUS).map(([k, l]) => `<option value="${k}" ${A.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    <label class="field grow"><span>بحث بالاسم أو العملية أو الرقم الطبي</span><input name="q" value="${esc(A.q)}"></label>
+    <button class="btn">عرض</button>
+  </form><div id="aoBody"><div class="loading">جاري التحميل…</div></div>`);
+  const f = document.getElementById("aoF");
+  const load = async () => {
+    Object.assign(A, { from: f.elements.from.value, to: f.elements.to.value, status: f.elements.status.value, q: f.elements.q.value.trim() });
+    const body = document.getElementById("aoBody");
+    try {
+      const col = collection(db, "operations");
+      let rows = /^mr-?\d+$/i.test(A.q)
+        ? (await getDocs(query(col, where("medicalId", "==", "MR-" + A.q.replace(/\D/g, ""))))).docs
+        : (await getDocs(query(col, where("proposedAt", ">=", Timestamp.fromDate(new Date(A.from + "T00:00:00"))),
+          where("proposedAt", "<=", Timestamp.fromDate(new Date(A.to + "T23:59:59"))), orderBy("proposedAt", "desc")))).docs;
+      rows = rows.map((d) => ({ id: d.id, ...d.data() }));
+      if (A.q && !/^mr-?\d+$/i.test(A.q)) { const q = A.q.toLowerCase(); rows = rows.filter((r) => [r.patientName, r.operation, r.diagnosis].some((x) => (x || "").toLowerCase().includes(q))); }
+      if (A.status) rows = rows.filter((r) => r.status === A.status);
+      rows.sort((x, y) => toDate(y.proposedAt) - toDate(x.proposedAt));
+      body.innerHTML = rows.length ? `
+        <div class="arc-sum"><span><b>${rows.length}</b> عملية</span>${Object.entries(OP_STATUS).map(([k, l]) => `<span class="dis op-${k}"><b>${rows.filter((r) => r.status === k).length}</b> ${l}</span>`).join("")}</div>
+        <div class="table-wrap"><table><thead><tr><th>الميعاد</th><th>المريض</th><th>رقم العملية</th><th>العملية</th><th>التخصص</th><th>الاستشاري</th><th>التخدير</th><th>الحالة</th></tr></thead>
+        <tbody>${rows.map((o) => `<tr><td class="nowrap">${fmtDateTime(o.doneAt || o.proposedAt)}</td><td><a href="#/o/${o.id}"><strong>${esc(o.patientName)}</strong></a></td>
+          <td class="ltr">${esc(o.number || "")}</td><td class="ltr-auto">${esc(o.operation)}</td><td>${esc(o.specialty || "")}</td><td>${esc(o.consultant || "")}</td>
+          <td>${esc(o.anesthesia || "")}</td><td><span class="dis op-${o.status}">${OP_STATUS[o.status]}</span></td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="empty">لا يوجد عمليات بالشروط دي.</div>`;
+    } catch (e) { body.innerHTML = `<div class="err">${esc(errText(e))}</div>`; }
+  };
+  f.onsubmit = (ev) => { ev.preventDefault(); load(); };
+  load();
+}
+
+/* ---------- نقل مريض الداخلي ---------- */
+async function openWardTransfer(a) {
+  let occ;
+  try { occ = await bedOccupancy(); } catch (e) { toast(errText(e), true); return; }
+  const free = (u) => Array.from({ length: u.beds }, (_, i) => i + 1).filter((n) => !occ[u.id]?.has(n));
+  const opts = wardUnits().filter((u) => free(u).length);
+  if (!opts.length) { toast("مفيش أسرّة فاضية في الداخلي.", true); return; }
+  const f = formDialog(`نقل: ${esc(a.patientName)}`, `
+    <p class="muted" style="margin:0">حالياً في ${esc(wardById(a.deptId)?.name || "")}، سرير ${a.bed}</p>
+    <div class="row2">
+      <label class="field"><span>القسم</span><select name="dept">${opts.map((u) => `<option value="${u.id}" ${u.id === a.deptId ? "selected" : ""}>${esc(u.name)} (${free(u).length} فاضي)</option>`).join("")}</select></label>
+      <label class="field"><span>السرير</span><select name="bed"></select></label>
+    </div>
+    <label class="field"><span>وقت النقل</span><input name="at" type="datetime-local" value="${toLocalInput(new Date())}" max="${toLocalInput(new Date())}"></label>
+    <label class="field"><span>السبب (اختياري)</span><input name="reason"></label>`,
+    "تأكيد النقل", async (f) => {
+      const toDept = f.elements.dept.value, toBed = Number(f.elements.bed.value);
+      if (!toDept || !toBed) return "اختر القسم والسرير.";
+      const at = new Date(f.elements.at.value);
+      if (isNaN(at) || at < toDate(a.admitAt)) return "وقت النقل غير صحيح.";
+      const wRef = doc(db, "wardAdmissions", a.id), nb = doc(db, "beds", `${toDept}_${toBed}`);
+      await runTransaction(db, async (tx) => {
+        const cur = (await tx.get(wRef)).data();
+        if (cur.status !== "active") throw new Error("ALREADY_OUT");
+        if ((await tx.get(nb)).exists()) throw new Error("BED_TAKEN");
+        const ob = doc(db, "beds", `${cur.deptId}_${cur.bed}`), obs = await tx.get(ob);
+        if (obs.exists() && obs.data().admissionId === a.id) tx.delete(ob);
+        tx.set(nb, { unitId: toDept, bed: toBed, admissionId: a.id, section: "ward", since: serverTimestamp() });
+        tx.update(wRef, { deptId: toDept, bed: toBed, ...upMeta(),
+          moves: arrayUnion({ fromUnit: cur.deptId, fromBed: cur.bed, toUnit: toDept, toBed, at: Timestamp.fromDate(at), byName: S.profile.displayName, reason: f.elements.reason.value.trim() }) });
+      });
+      audit("نقل داخلي", { adm: { id: a.id, patientName: a.patientName, unitId: toDept }, details: { from: `${wardById(a.deptId)?.name} ${a.bed}`, to: `${wardById(toDept)?.name} ${toBed}` } });
+      toast(`تم النقل إلى ${wardById(toDept)?.name}، سرير ${toBed}`);
+    });
+  const fill = () => { const u = wardById(f.elements.dept.value); f.elements.bed.innerHTML = free(u).map((n) => `<option value="${n}">سرير ${n}</option>`).join(""); };
+  f.elements.dept.onchange = fill; fill();
+}
+
+function wardMovesHtml(a) {
+  if (!a.moves?.length) return "";
+  return `<section class="panel stack-gap"><header><h2>سجل النقل</h2></header><ul class="entries">${[...a.moves].sort((x, y) => toDate(x.at) - toDate(y.at)).map((m) => `
+    <li><div class="entry-head"><strong>${esc(wardById(m.fromUnit)?.name || m.fromUnit)}، سرير ${m.fromBed}</strong><span aria-hidden="true">←</span>
+      <strong>${esc(wardById(m.toUnit)?.name || m.toUnit)}، سرير ${m.toBed}</strong><span class="by-line">${fmtDateTime(m.at)}، ${esc(m.byName)}</span></div>
+      ${m.reason ? `<p>${esc(m.reason)}</p>` : ""}</li>`).join("")}</ul></section>`;
 }
