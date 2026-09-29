@@ -294,7 +294,10 @@ function route() {
   } else if (page === "w" && parts[1]) {
     S.page = "wadm"; renderWardAdmission(parts[1]);
   } else if (page === "reports" && canSee("reports")) {
-    S.page = "reports"; renderReports();
+    S.page = "reports";
+    if (parts[1] === "discharge") renderDischargeReports(); else renderReports();
+  } else if (page === "ds" && parts[1]) {
+    S.page = "ds"; renderDischargeReport(parts[1]);
   } else if (page === "r" && parts[1] && canSee("reports")) {
     S.page = "report"; renderReport(parts[1]);
   } else if (page === "ops" && canSee("ops")) {
@@ -1045,6 +1048,7 @@ function onPatientClick(ev) {
     case "transfer": openTransfer(); break;
     case "discharge": openDischarge(); break;
     case "prevAdm": loadPrevAdmissions(); break;
+    case "dsum": dischargeSummaryAction("icu"); break;
     case "print": openPrintDialog(); break;
     case "wristband": printWristband(); break;
     case "report": openReportForm({ type: "icu", adm: P.adm, pat: P.pat }); break;
@@ -2100,7 +2104,7 @@ function ptInfoExtra() {
     const i = a.dischargeInfo || {};
     html += `
     <section class="panel dis-panel t-${a.dischargeType}">
-      <header><h2>بيانات الخروج</h2></header>
+      <header><h2>بيانات الخروج</h2><button class="btn ghost sm" data-act="dsum">${a.dischargeType === "death" ? "تقرير الوفاة" : "تقرير الخروج"}</button></header>
       <dl class="kv">
         <dt>نوع الخروج</dt><dd><strong>${DIS_TYPES[a.dischargeType] || ""}</strong></dd>
         <dt>${a.dischargeType === "death" ? "وقت الوفاة" : "وقت الخروج"}</dt><dd>${fmtDateTime(a.dischargeAt)}</dd>
@@ -2222,6 +2226,7 @@ function openDischarge() {
     <label class="field df d-transfer"><span>اسم المستشفى</span><input name="hospital"></label>
     <label class="field df d-transfer"><span>سبب التحويل</span><textarea name="reason" rows="2"></textarea></label>
     <label class="field"><span>ملاحظات (اختياري)</span><textarea name="notes" rows="2"></textarea></label>
+    <div class="checks"><label><input type="checkbox" name="writeDs" checked> اكتب تقرير الخروج (أو الوفاة) بعد التأكيد</label></div>
     <p class="note">بعد الخروج الملف بيتنقل للأرشيف والسرير بيفضى، والملف مش هيظهر غير للأدمن.</p>`,
     "تأكيد الخروج",
     async (f) => {
@@ -2237,6 +2242,7 @@ function openDischarge() {
         info.ward = `${wardById(toWard.dept)?.name || ""}، سرير ${toWard.bed}`;
       } else if (type === "ward") { info.ward = f.elements.ward.value.trim(); if (!info.ward) return "اكتب القسم الداخلي."; }
       const lastDx = S.P.entries.filter((e) => e.kind === "diagnosis").sort(desc)[0]?.text || "";
+      const dsCtx = f.elements.writeDs.checked ? await buildDischargeContext("icu") : null;
       const wRef = doc(collection(db, "wardAdmissions"));
       if (type === "transfer") {
         info.hospital = f.elements.hospital.value.trim(); info.reason = f.elements.reason.value.trim();
@@ -2278,8 +2284,11 @@ function openDischarge() {
       });
       audit(`خروج: ${DIS_TYPES[type]}`, { adm: a, details: info });
       toast(`تم تسجيل الخروج (${DIS_TYPES[type]})`);
-      if (toWard) setTimeout(() => (location.hash = canSee("ward") ? `#/w/${wRef.id}` : `#/unit/${a.unitId}`), 0);
-      else if (!isAdmin()) setTimeout(() => (location.hash = `#/unit/${a.unitId}`), 0);
+      const go = () => {
+        if (toWard) location.hash = canSee("ward") ? `#/w/${wRef.id}` : `#/unit/${a.unitId}`;
+        else if (!isAdmin()) location.hash = `#/unit/${a.unitId}`;
+      };
+      setTimeout(() => { go(); if (dsCtx) openDischargeSummary({ ...dsCtx, dis: { at: Timestamp.fromDate(at), type, info } }); }, 0);
     });
   const sync = () => (f.dataset.dtype = f.querySelector('input[name="dtype"]:checked').value);
   f.querySelectorAll('input[name="dtype"]').forEach((r) => (r.onchange = sync));
@@ -3006,6 +3015,7 @@ function renderPatientHub(pid) {
       [H.icu, H.ward] = await Promise.all([load("admissions", null, H.p.currentAdmissionId), load("wardAdmissions", null, H.p.currentWardId)]);
       H.ops = canSee("ops") ? (await getDocs(query(collection(db, "operations"), where("patientId", "==", pid)))).docs.map((d) => ({ id: d.id, ...d.data() })) : [];
       H.reps = canSee("reports") ? (await getDocs(query(collection(db, "medicalReports"), where("patientId", "==", pid)))).docs.map((d) => ({ id: d.id, ...d.data() })) : [];
+      H.ds = canSee("reports") || isAdmin() ? (await getDocs(query(collection(db, "dischargeReports"), where("patientId", "==", pid)))).docs.map((d) => ({ id: d.id, ...d.data() })) : [];
     } catch (e) { console.error(e); }
     draw();
   }));
@@ -3062,7 +3072,10 @@ function drawHub() {
     ${canSee("reports") ? `<section class="panel"><header><h2>التقارير الطبية</h2>${canEdit("reports") ? `<button class="btn ghost sm" data-h="rep">كتابة تقرير</button>` : ""}</header>
       ${(S.H.reps || []).length ? `<ul class="prev-list">${[...S.H.reps].sort((x, y) => toDate(y.reportDate) - toDate(x.reportDate)).map((r) => `<li><a href="#/r/${r.id}">
         <strong>${fmtDate(r.reportDate)}</strong><span class="ltr muted">${esc(r.admissionNumber || "")}</span><span>${esc(r.doctorName)}</span></a></li>`).join("")}</ul>`
-        : `<p class="muted">${S.H.reps === null ? "جاري التحميل…" : "لا يوجد"}</p>`}</section>` : ""}
+        : `<p class="muted">${S.H.reps === null ? "جاري التحميل…" : "لا يوجد"}</p>`}
+      ${(S.H.ds || []).length ? `<h3 class="st-h" style="font-size:15px;margin-top:12px">تقارير الخروج والوفاة</h3><ul class="prev-list">${S.H.ds.map((r) => `<li><a href="#/ds/${r.id}">
+        <strong>${fmtDate(r.dischargeAt)}</strong><span class="ltr muted">${esc(r.admissionNumber || "")}</span>
+        <span class="dis ${r.kind === "death" ? "t-death" : ""}">${r.kind === "death" ? "وفاة" : "خروج"}</span></a></li>`).join("")}</ul>` : ""}</section>` : ""}
     ${canSee("ops") ? `<section class="panel"><header><h2>العمليات</h2></header>
       ${opRows ? `<ul class="prev-list">${opRows}</ul>` : `<p class="muted">${ops === null ? "جاري التحميل…" : "لا يوجد"}</p>`}</section>` : ""}
   </div>`);
@@ -3291,7 +3304,7 @@ function drawWardAdmission() {
         <dt>المعاملة المالية</dt><dd>${finInfoHtml(a, canW)}</dd>
         <dt>سجّل الدخول</dt><dd>${esc(a.createdByName || "")}</dd>
       </dl></section>
-    ${a.status === "discharged" ? `<section class="panel dis-panel"><header><h2>بيانات الخروج</h2></header>
+    ${a.status === "discharged" ? `<section class="panel dis-panel"><header><h2>بيانات الخروج</h2><button class="btn ghost sm" data-w="dsum">${a.dischargeType === "death" ? "تقرير الوفاة" : "تقرير الخروج"}</button></header>
       <dl class="kv"><dt>نوع الخروج</dt><dd><strong>${WARD_DIS[a.dischargeType] || ""}</strong></dd>
         <dt>وقت الخروج</dt><dd>${fmtDateTime(a.dischargeAt)}</dd>
         <dt>المعاملة المالية</dt><dd>${esc(finText(finBreakdown(a)))}</dd>
@@ -3314,7 +3327,7 @@ function drawWardAdmission() {
     if (b.dataset.act === "finChange") return openFinanceChange(a, "wardAdmissions");
     if (b.dataset.act === "finDel") return deleteFinance(b.dataset.from, a, "wardAdmissions");
     ({ edit: () => openWardEdit(a), discharge: () => openWardDischarge(a), band: () => printWristbandFor({ ...a, name: a.patientName }, `${u.name}، سرير ${a.bed}`), print: () => printWard(a, meds),
-      report: () => openReportForm({ type: "ward", adm: a }), del: () => deleteWardAdmission(a, meds), transfer: () => openWardTransfer(a) })[b.dataset.w]?.();
+      report: () => openReportForm({ type: "ward", adm: a }), del: () => deleteWardAdmission(a, meds), transfer: () => openWardTransfer(a), dsum: () => dischargeSummaryAction("ward") })[b.dataset.w]?.();
   };
 }
 
@@ -3357,6 +3370,7 @@ function openWardDischarge(a) {
     <label class="field df d-death"><span>سبب الوفاة</span><textarea name="deathCause" rows="2"></textarea></label>
     <label class="field df d-otherDept"><span>القسم المحول إليه</span><input name="dept"></label>
     <label class="field"><span>ملاحظات (اختياري)</span><textarea name="notes" rows="2"></textarea></label>
+    <div class="checks"><label><input type="checkbox" name="writeDs" checked> اكتب تقرير الخروج (أو الوفاة) بعد التأكيد</label></div>
     <p class="note">بعد الخروج السرير بيفضى والملف بيتقفل، ومش هيتعدل غير من الأدمن.${" "}في "تحويل للرعاية" هيتفتح ملف المريض عشان تسجل دخول الرعاية.</p>`,
     "تأكيد الخروج", async (f) => {
       const type = f.querySelector('input[name="dtype"]:checked').value;
@@ -3366,6 +3380,7 @@ function openWardDischarge(a) {
       const info = { notes: f.elements.notes.value.trim() };
       if (type === "death") { info.deathCause = f.elements.deathCause.value.trim(); if (!info.deathCause) return "اكتب سبب الوفاة."; }
       if (type === "otherDept") { info.dept = f.elements.dept.value.trim(); if (!info.dept) return "اكتب القسم المحول إليه."; }
+      const dsCtx = f.elements.writeDs.checked ? await buildDischargeContext("ward") : null;
       const wRef = doc(db, "wardAdmissions", a.id), pRef = doc(db, "patients", a.patientId), bRef = doc(db, "beds", `${a.deptId}_${a.bed}`);
       await runTransaction(db, async (tx) => {
         const cur = (await tx.get(wRef)).data();
@@ -3378,7 +3393,8 @@ function openWardDischarge(a) {
       });
       audit(`خروج داخلي: ${WARD_DIS[type]}`, { adm: { id: a.id, patientName: a.patientName, unitId: a.deptId }, details: info });
       toast(`تم تسجيل الخروج (${WARD_DIS[type]})`);
-      setTimeout(() => (location.hash = type === "icu" ? `#/p/${a.patientId}` : isAdmin() ? location.hash : `#/ward/${a.deptId}`), 0);
+      const go = () => (location.hash = type === "icu" ? `#/p/${a.patientId}` : isAdmin() ? location.hash : `#/ward/${a.deptId}`);
+      setTimeout(() => { go(); if (dsCtx) openDischargeSummary({ ...dsCtx, dis: { at: Timestamp.fromDate(at), type, info } }); }, 0);
     });
   const sync = () => (f.dataset.dtype = f.querySelector('input[name="dtype"]:checked').value);
   f.querySelectorAll('input[name="dtype"]').forEach((r) => (r.onchange = sync)); sync();
@@ -3788,8 +3804,8 @@ function openReportForm(ctx, report) {
 
 function renderReports() {
   const T = (S.R ||= { from: isoDay(new Date(Date.now() - 30 * 864e5)), to: isoDay(new Date()), q: "" });
-  shell(`
-  <div class="toolbar"><h2>التقارير الطبية</h2>${canEdit("reports") ? `<button class="btn" id="newRep">كتابة تقرير</button>` : ""}</div>
+  shell(reportsTabs("medical") + `
+  ${canEdit("reports") ? `<div class="toolbar"><span></span><button class="btn" id="newRep">كتابة تقرير</button></div>` : ""}
   <form class="filters" id="rpF">
     <label class="field"><span>من</span><input type="date" name="from" value="${T.from}"></label>
     <label class="field"><span>إلى</span><input type="date" name="to" value="${T.to}"></label>
@@ -4191,4 +4207,234 @@ function wardMovesHtml(a) {
     <li><div class="entry-head"><strong>${esc(wardById(m.fromUnit)?.name || m.fromUnit)}، سرير ${m.fromBed}</strong><span aria-hidden="true">←</span>
       <strong>${esc(wardById(m.toUnit)?.name || m.toUnit)}، سرير ${m.toBed}</strong><span class="by-line">${fmtDateTime(m.at)}، ${esc(m.byName)}</span></div>
       ${m.reason ? `<p>${esc(m.reason)}</p>` : ""}</li>`).join("")}</ul></section>`;
+}
+
+/* =========================================================
+   تقرير الخروج (Discharge Summary) وتقرير الوفاة
+   ========================================================= */
+const CONDITIONS = ["Stable", "Improved", "Guarded", "Critical", "Against medical advice"];
+const dsId = (type, id) => `${type}_${id}`;
+
+// تجهيز بيانات التقرير من ملف المريض (بتتعمل قبل الخروج عشان البيانات تبقى في إيد البرنامج)
+async function buildDischargeContext(type) {
+  if (type === "icu") {
+    const { adm: a, pat: p, entries, meds } = S.P;
+    const dx = entries.filter((e) => e.kind === "diagnosis").sort(asc);
+    const inv = entries.filter((e) => e.kind === "investigation" && e.result).sort(asc);
+    const today = isoDay(new Date());
+    const activeMeds = meds.filter((m) => !m.stopDate && !(medEnd(m) && medEnd(m) < today));
+    return {
+      type, adm: a, pat: p,
+      pre: {
+        admissionDx: (dx.find((e) => e.dxType === "initial") || dx[0])?.text || "",
+        finalDx: [...dx].reverse().find((e) => e.dxType === "final")?.text || dx[dx.length - 1]?.text || "",
+        investigations: inv.map((e) => `${e.name}: ${e.result}`).join("\n"),
+        dischargeMeds: activeMeds.map((m) => { const d = currentDose(m); return [m.name, d.dose, d.frequency, m.route].filter(Boolean).join(" - "); }).join("\n"),
+        procedures: await proceduresText(a),
+      },
+    };
+  }
+  const { a, meds } = S.W;
+  const p = (await getDoc(doc(db, "patients", a.patientId)).catch(() => null))?.data() || {};
+  const drugs = [...new Set(meds.map((m) => [m.drug, m.dose, m.schedule].filter(Boolean).join(" - ")))];
+  return { type, adm: a, pat: p, pre: { admissionDx: a.diagnosis || "", finalDx: a.diagnosis || "", investigations: "", dischargeMeds: drugs.join("\n"), procedures: await proceduresText(a) } };
+}
+async function proceduresText(a) {
+  if (!canSee("ops")) return "";
+  try {
+    const s = await getDocs(query(collection(db, "operations"), where("patientId", "==", a.patientId)));
+    const from = toDate(a.admitAt);
+    return s.docs.map((d) => d.data()).filter((o) => o.status === "done" && toDate(o.doneAt || o.proposedAt) >= from)
+      .map((o) => `${fmtDate(o.doneAt || o.proposedAt)}: ${o.operation}`).join("\n");
+  } catch { return ""; }
+}
+
+// ctx.adm لازم يكون فيه بيانات الخروج (بعد الخروج) أو نمررها في dis
+function openDischargeSummary(ctx, existing, onDone) {
+  const r = existing || {};
+  const a = ctx?.adm || {};
+  const dis = ctx?.dis || { at: a.dischargeAt, type: a.dischargeType, info: a.dischargeInfo || {} };
+  const death = existing ? r.kind === "death" : dis.type === "death";
+  const v = (k) => esc(existing ? r[k] ?? "" : ctx.pre?.[k] ?? "");
+  const area = (k, l, rows = 3, hint = "") => `<label class="field"><span>${l}</span><textarea name="${k}" rows="${rows}" class="ltr">${v(k)}</textarea>${hint ? `<span class="hint">${hint}</span>` : ""}</label>`;
+  const fields = death ? `
+    ${area("admissionDx", "Admission diagnosis", 2)}
+    ${area("immediateCause", "Immediate cause of death (سبب الوفاة المباشر)", 2)}
+    ${area("antecedentCauses", "Antecedent causes (الأسباب المؤدية)", 2)}
+    ${area("contributing", "Other contributing conditions (حالات مساعدة)", 2)}
+    ${area("course", "Hospital course (سير الحالة)", 5)}
+    <div class="row2">
+      <label class="field"><span>CPR</span><select name="cpr">${optionsHtml(["Done", "Not done", "DNR"], existing ? r.cpr : "")}</select></label>
+      <label class="field"><span>CPR duration (min)</span><input name="cprDuration" class="ltr" value="${v("cprDuration")}"></label>
+    </div>
+    ${area("notes", "Notes", 2)}`
+    : `
+    ${area("admissionDx", "Admission diagnosis (تشخيص الدخول)", 2)}
+    ${area("finalDx", "Final diagnosis (التشخيص النهائي)", 2)}
+    ${area("course", "Hospital course (ملخص سير الحالة)", 5)}
+    ${area("procedures", "Procedures / Operations (العمليات والإجراءات)", 2)}
+    ${area("investigations", "Key investigations (أهم التحاليل والأشعة)", 3, "اتملت من النتايج المسجلة. امسح اللي مش محتاجه.")}
+    <label class="field"><span>Condition on discharge (حالة المريض عند الخروج)</span><input name="condition" class="ltr" list="dlCond" value="${v("condition")}" autocomplete="off">
+      <datalist id="dlCond">${CONDITIONS.map((c) => `<option value="${c}">`).join("")}</datalist></label>
+    ${area("dischargeMeds", "Discharge medications (علاج الخروج)", 4, "كل دواء في سطر: الاسم - الجرعة - عدد المرات - المدة")}
+    ${area("instructions", "Instructions (التعليمات)", 2)}
+    <div class="row2">
+      <label class="field"><span>Follow-up date (ميعاد المتابعة)</span><input name="followUpDate" type="date" value="${v("followUpDate")}"></label>
+      <label class="field"><span>Follow-up clinic (العيادة)</span><input name="followUpClinic" value="${v("followUpClinic")}"></label>
+    </div>`;
+  formDialog(death ? "تقرير الوفاة" : "تقرير الخروج", `
+    <div class="info">${esc(existing ? r.patientName : a.patientName)}، ${esc(existing ? r.admissionNumber : a.admissionNumber || "")}</div>
+    ${fields}`,
+    existing ? "حفظ التعديل" : "حفظ التقرير", async (f) => {
+      const keys = death ? ["admissionDx", "immediateCause", "antecedentCauses", "contributing", "course", "cpr", "cprDuration", "notes"]
+        : ["admissionDx", "finalDx", "course", "procedures", "investigations", "condition", "dischargeMeds", "instructions", "followUpDate", "followUpClinic"];
+      const d = Object.fromEntries(keys.map((k) => [k, (f.elements[k]?.value || "").trim()]));
+      if (death && !d.immediateCause) return "اكتب سبب الوفاة المباشر.";
+      if (!death && !d.finalDx) return "اكتب التشخيص النهائي.";
+      if (existing) {
+        await updateDoc(doc(db, "dischargeReports", r.id), { ...d, ...upMeta() });
+        audit(death ? "تعديل تقرير وفاة" : "تعديل تقرير خروج", { adm: { id: r.admissionId, patientName: r.patientName, unitId: "" }, before: r });
+        toast("تم حفظ التعديل");
+        onDone?.(r.id);
+        return;
+      }
+      const p = ctx.pat || {};
+      const place = ctx.type === "icu" ? `${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}` : `${wardById(a.deptId)?.name || ""}، سرير ${a.bed}`;
+      const disAt = toDate(dis.at) || new Date();
+      const id = dsId(ctx.type, a.id);
+      await setDoc(doc(db, "dischargeReports", id), {
+        ...d, kind: death ? "death" : "discharge", admissionType: ctx.type, admissionId: a.id, patientId: a.patientId,
+        patientName: a.patientName, medicalId: a.medicalId || p.medicalId || "", nationalId: a.nationalId || p.nationalId || "",
+        age: ageText(p.birthDate || a.birthDate, p.birthDateEstimated), gender: p.gender || a.gender || "",
+        admissionNumber: a.admissionNumber || "", place, consultant: a.consultant || "",
+        admitAt: a.admitAt, dischargeAt: Timestamp.fromDate(disAt),
+        los: stayDays({ admitAt: a.admitAt, status: "discharged", dischargeAt: Timestamp.fromDate(disAt) }),
+        finance: finText(finBreakdown({ ...a, status: "discharged", dischargeAt: Timestamp.fromDate(disAt) })),
+        dischargeType: (ctx.type === "icu" ? DIS_TYPES : WARD_DIS)[dis.type] || "", deathCause: dis.info?.deathCause || "",
+        doctorName: S.profile.displayName, ...meta(),
+      });
+      audit(death ? "كتابة تقرير وفاة" : "كتابة تقرير خروج", { adm: { id: a.id, patientName: a.patientName, unitId: "" } });
+      toast("تم حفظ التقرير");
+      onDone?.(id);
+    });
+}
+
+// زر "تقرير الخروج" في ملف الحالة بعد الخروج
+async function dischargeSummaryAction(type) {
+  const a = type === "icu" ? S.P.adm : S.W.a;
+  try {
+    const s = await getDoc(doc(db, "dischargeReports", dsId(type, a.id)));
+    if (s.exists()) { location.hash = `#/ds/${s.id}`; return; }
+  } catch {}
+  const ctx = await buildDischargeContext(type);
+  openDischargeSummary(ctx, null, (id) => (location.hash = `#/ds/${id}`));
+}
+
+function renderDischargeReport(id) {
+  shell(`<div class="loading">جاري التحميل…</div>`);
+  S.pageUnsubs.push(onSnapshot(doc(db, "dischargeReports", id), (s) => {
+    if (S.page !== "ds") return;
+    if (!s.exists()) { shell(`<div class="empty">التقرير غير موجود.</div>`); return; }
+    const r = { id: s.id, ...s.data() };
+    const death = r.kind === "death";
+    const canW = isAdmin() || r.createdBy === S.profile.uid;
+    const row = (l, k) => (r[k] ? `<dt>${l}</dt><dd class="pre-wrap ltr">${esc(r[k])}</dd>` : "");
+    shell(`
+    <div class="file-head">
+      <a class="back" href="#/p/${r.patientId}">ملف المريض</a>
+      <h1>${death ? "تقرير الوفاة" : "تقرير الخروج"}: ${esc(r.patientName)}</h1>
+      <div class="tags"><span class="tag mr">${esc(r.medicalId)}</span><span class="tag mr">${esc(r.admissionNumber)}</span>
+        <span class="tag">${esc(r.place)}</span><span class="tag">${fmtDate(r.admitAt)} ← ${fmtDate(r.dischargeAt)}، ${r.los} يوم</span></div>
+      <div class="file-actions">
+        ${canW ? `<button class="btn ghost" data-d="edit">تعديل</button>` : ""}
+        ${canPrint() || canW ? `<button class="btn" data-d="print">طباعة / PDF</button>` : ""}
+        ${isAdmin() ? `<button class="btn ghost del" data-d="del">حذف</button>` : ""}
+      </div>
+    </div>
+    <section class="panel"><dl class="kv">
+      <dt>نوع الخروج</dt><dd>${esc(r.dischargeType)}</dd><dt>المعاملة المالية</dt><dd>${esc(r.finance)}</dd>
+      <dt>استشاري الحالة</dt><dd>${esc(r.consultant || "—")}</dd>
+      ${death ? row("Admission diagnosis", "admissionDx") + row("Immediate cause", "immediateCause") + row("Antecedent causes", "antecedentCauses")
+        + row("Contributing", "contributing") + row("Hospital course", "course") + row("CPR", "cpr") + row("CPR duration", "cprDuration") + row("Notes", "notes")
+        : row("Admission diagnosis", "admissionDx") + row("Final diagnosis", "finalDx") + row("Hospital course", "course") + row("Procedures", "procedures")
+        + row("Investigations", "investigations") + row("Condition", "condition") + row("Discharge medications", "dischargeMeds") + row("Instructions", "instructions")
+        + (r.followUpDate || r.followUpClinic ? `<dt>Follow-up</dt><dd>${r.followUpDate ? fmtDate(r.followUpDate) : ""} ${esc(r.followUpClinic || "")}</dd>` : "")}
+      <dt>الطبيب</dt><dd>${esc(r.doctorName)}، ${fmtDateTime(r.createdAt)}</dd>
+    </dl></section>`);
+    root.querySelector("main").onclick = async (ev) => {
+      const b = ev.target.closest("[data-d]"); if (!b) return;
+      if (b.dataset.d === "edit") openDischargeSummary(null, r);
+      if (b.dataset.d === "print") printDischargeReport(r);
+      if (b.dataset.d === "del" && confirm("حذف التقرير نهائياً؟")) {
+        try { await deleteDoc(doc(db, "dischargeReports", r.id)); audit("حذف تقرير خروج", { adm: { id: r.admissionId, patientName: r.patientName, unitId: "" }, before: r });
+          toast("تم الحذف"); location.hash = `#/p/${r.patientId}`; } catch (e) { toast(errText(e), true); }
+      }
+    };
+  }, () => shell(`<div class="empty">ليس لديك صلاحية لعرض التقرير ده.</div>`)));
+}
+
+function printDischargeReport(r) {
+  const death = r.kind === "death";
+  const sec = (t, k) => (r[k] ? `<h2>${t}</h2><div class="pre">${esc(r[k])}</div>` : "");
+  const meds = (r.dischargeMeds || "").split("\n").map((x) => x.trim()).filter(Boolean);
+  printDoc(`${death ? "Death report" : "Discharge summary"} - ${r.patientName}`, `
+    <div dir="ltr" style="text-align:left">
+      <h1 style="text-align:center">${death ? "DEATH REPORT <span style='font-weight:400'>| تقرير وفاة</span>" : "DISCHARGE SUMMARY <span style='font-weight:400'>| تقرير خروج</span>"}</h1>
+      <table><tbody>
+        <tr><th>Name</th><td dir="rtl" style="text-align:right">${esc(r.patientName)}</td><th>MRN</th><td>${esc(r.medicalId)}</td></tr>
+        <tr><th>Age / Sex</th><td dir="rtl" style="text-align:right">${esc(r.age || "")}، ${genderText(r.gender)}</td><th>Admission No.</th><td>${esc(r.admissionNumber)}</td></tr>
+        <tr><th>National ID</th><td>${esc(r.nationalId || "—")}</td><th>Ward / Unit</th><td dir="rtl" style="text-align:right">${esc(r.place)}</td></tr>
+        <tr><th>Admission</th><td>${fmtDateTime(r.admitAt)}</td><th>${death ? "Time of death" : "Discharge"}</th><td>${fmtDateTime(r.dischargeAt)}</td></tr>
+        <tr><th>Length of stay</th><td>${r.los} day(s)</td><th>Consultant</th><td dir="rtl" style="text-align:right">${esc(r.consultant || "")}</td></tr>
+        <tr><th>Discharge type</th><td dir="rtl" style="text-align:right">${esc(r.dischargeType)}</td><th>Financial</th><td dir="rtl" style="text-align:right">${esc(r.finance)}</td></tr>
+      </tbody></table>
+      ${death ? sec("Admission diagnosis", "admissionDx") + `<h2>Cause of death</h2><table><tbody>
+          <tr><th style="width:34%">Immediate cause</th><td class="pre">${esc(r.immediateCause)}</td></tr>
+          <tr><th>Antecedent causes</th><td class="pre">${esc(r.antecedentCauses || "—")}</td></tr>
+          <tr><th>Other contributing conditions</th><td class="pre">${esc(r.contributing || "—")}</td></tr></tbody></table>`
+        + sec("Hospital course", "course") + (r.cpr ? `<h2>Resuscitation</h2><p>CPR: ${esc(r.cpr)}${r.cprDuration ? `, ${esc(r.cprDuration)} min` : ""}</p>` : "") + sec("Notes", "notes")
+      : sec("Admission diagnosis", "admissionDx") + sec("Final diagnosis", "finalDx") + sec("Hospital course", "course") + sec("Procedures / Operations", "procedures")
+        + sec("Key investigations", "investigations") + (r.condition ? `<h2>Condition on discharge</h2><p>${esc(r.condition)}</p>` : "")
+        + (meds.length ? `<h2>Discharge medications</h2><table><thead><tr><th>#</th><th>Medication</th></tr></thead><tbody>${meds.map((m, i) => `<tr><td style="width:28px">${i + 1}</td><td>${esc(m)}</td></tr>`).join("")}</tbody></table>` : "")
+        + sec("Instructions", "instructions")
+        + (r.followUpDate || r.followUpClinic ? `<h2>Follow-up</h2><p>${r.followUpDate ? fmtDate(r.followUpDate) : ""} ${esc(r.followUpClinic || "")}</p>` : "")}
+      <div class="sign" style="direction:ltr"><span>Physician: ${esc(r.doctorName)}</span><span>Signature: ....................</span><span>Consultant: ....................</span></div>
+    </div>`, true);
+}
+
+function renderDischargeReports() {
+  const T = (S.RD ||= { from: isoDay(new Date(Date.now() - 30 * 864e5)), to: isoDay(new Date()), q: "", kind: "" });
+  shell(reportsTabs("discharge") + `
+  <form class="filters" id="dsF">
+    <label class="field"><span>خروج من</span><input type="date" name="from" value="${T.from}"></label>
+    <label class="field"><span>إلى</span><input type="date" name="to" value="${T.to}"></label>
+    <label class="field"><span>النوع</span><select name="kind"><option value="">الكل</option><option value="discharge" ${T.kind === "discharge" ? "selected" : ""}>تقرير خروج</option><option value="death" ${T.kind === "death" ? "selected" : ""}>تقرير وفاة</option></select></label>
+    <label class="field grow"><span>بحث بالاسم أو الرقم الطبي أو التشخيص</span><input name="q" value="${esc(T.q)}"></label>
+    <button class="btn">بحث</button>
+  </form><div id="dsBody"><div class="loading">جاري التحميل…</div></div>`);
+  const f = document.getElementById("dsF");
+  const load = async () => {
+    Object.assign(T, { from: f.elements.from.value, to: f.elements.to.value, q: f.elements.q.value.trim(), kind: f.elements.kind.value });
+    const body = document.getElementById("dsBody");
+    try {
+      const col = collection(db, "dischargeReports");
+      let rows = /^mr-?\d+$/i.test(T.q) ? (await getDocs(query(col, where("medicalId", "==", "MR-" + T.q.replace(/\D/g, ""))))).docs
+        : (await getDocs(query(col, where("dischargeAt", ">=", Timestamp.fromDate(new Date(T.from + "T00:00:00"))),
+          where("dischargeAt", "<=", Timestamp.fromDate(new Date(T.to + "T23:59:59"))), orderBy("dischargeAt", "desc")))).docs;
+      rows = rows.map((d) => ({ id: d.id, ...d.data() }));
+      if (T.q && !/^mr-?\d+$/i.test(T.q)) { const q = T.q.toLowerCase(); rows = rows.filter((r) => [r.patientName, r.finalDx, r.admissionDx, r.immediateCause].some((x) => (x || "").toLowerCase().includes(q))); }
+      if (T.kind) rows = rows.filter((r) => r.kind === T.kind);
+      body.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>الخروج</th><th>المريض</th><th>رقم الدخول</th><th>المكان</th><th>التشخيص</th><th>النوع</th><th>الطبيب</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr><td class="nowrap">${fmtDate(r.dischargeAt)}</td><td><a href="#/ds/${r.id}"><strong>${esc(r.patientName)}</strong></a></td>
+          <td class="ltr">${esc(r.admissionNumber)}</td><td>${esc(r.place)}</td><td class="ltr-auto">${esc((r.finalDx || r.immediateCause || "").split("\n")[0])}</td>
+          <td>${r.kind === "death" ? `<span class="dis t-death">وفاة</span>` : `<span class="dis">خروج</span>`}</td><td>${esc(r.doctorName)}</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="empty">لا يوجد تقارير بالشروط دي.</div>`;
+    } catch (e) { body.innerHTML = `<div class="err">${esc(errText(e))}</div>`; }
+  };
+  f.onsubmit = (ev) => { ev.preventDefault(); load(); };
+  load();
+}
+function reportsTabs(tab) {
+  return `<nav class="tabs"><a href="#/reports" class="${tab === "medical" ? "on" : ""}">التقارير الطبية</a>
+    <a href="#/reports/discharge" class="${tab === "discharge" ? "on" : ""}">تقارير الخروج والوفاة</a></nav>`;
 }
