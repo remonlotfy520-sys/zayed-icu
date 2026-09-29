@@ -455,3 +455,16 @@ tr.day-row td{background:#F6F9F8;font-weight:700}
 .mini li em{font-style:normal;font-size:12px;background:var(--danger-soft);color:var(--danger);border-radius:999px;padding:0 8px}
 .mini li em.hot{font-weight:600}
 .mini.ops li{flex-wrap:wrap}
+
+/* ---------- تطبيق الموبايل ---------- */
+.topbar{padding-top:max(10px, env(safe-area-inset-top))}
+.page{padding-bottom:calc(60px + env(safe-area-inset-bottom))}
+@media (display-mode: standalone){ body{overscroll-behavior-y:contain} }
+
+/* ---------- منع التكرار وسجل مرات الدخول ---------- */
+.dup-box{border:1px solid #EBD3A8;background:var(--amber-soft);border-radius:10px;padding:10px 12px;display:grid;gap:8px}
+.dup-box .use{margin-inline-start:auto;color:var(--teal);font-weight:600;font-size:13px}
+.visit-hist{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.visit-hist h3{font-size:15px;margin:0 0 6px}
+.visit-hist .prev-list{margin-top:4px}
+.prev-list .pv{display:flex;flex-wrap:wrap;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:7px 12px;background:#F8FBFA}
