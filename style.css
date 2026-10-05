@@ -503,3 +503,7 @@ table.ho .pill{margin:0 0 3px 3px}
 .bt .bp{font-weight:600;font-size:13px;line-height:1.2}
 .bt .bv{position:absolute;bottom:3px;inset-inline-end:5px;background:#fff;color:var(--danger);border-radius:999px;font-size:10.5px;padding:0 5px;font-weight:700}
 .kpi.hot{background:var(--danger)}
+
+/* ---------- صفحة القسم ---------- */
+.alert-bar{background:#E6EEF8;border:1px solid #BFD3EA;color:#1D3F66;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:15px}
+.alert-bar.urgent{background:var(--danger-soft);border-color:#EFC2C2;color:var(--danger)}
