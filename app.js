@@ -276,6 +276,7 @@ function route() {
 
   const parts = location.hash.replace(/^#\/?/, "").split("/");
   const page = parts[0] || "";
+  if (isDept() && !["", "home", "dept", "patient", "w", "consults"].includes(page)) { location.hash = "#/"; return; }
   const newKey = location.hash;
   // لو نفس الصفحة ومفيش غير تحديث بيانات، متعيدش فتح المستمعين
   if (S._lastHash === newKey && S.page && S.page !== "login" && S.page !== "setup") {
@@ -307,7 +308,7 @@ function route() {
   } else if (page === "r" && parts[1] && canSee("reports")) {
     S.page = "report"; renderReport(parts[1]);
   } else if (page === "consults") {
-    S.page = "consults"; renderConsults(parts[1] === "mine" ? "mine" : "in");
+    S.page = "consults"; renderConsults(parts[1] === "mine" && !isDept() ? "mine" : "in");
   } else if (page === "handover" && (canSee("icu") || canSee("ward"))) {
     S.page = "handover"; renderHandover(parts[1] ? decodeURIComponent(parts[1]) : "");
   } else if (page === "board" && (canSee("icu") || canSee("ward"))) {
@@ -349,7 +350,7 @@ function shell(inner) {
     </a>
     <nav class="nav">
       <a href="#/" class="${["home", "dept"].includes(S.page) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
-      <a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>
+      ${isDept() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
       ${canSee("icu") ? `<a href="#/icu" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
       ${canSee("ward") ? `<a href="#/ward" class="${["ward", "wadm"].includes(S.page) ? "on" : ""}">الداخلي</a>` : ""}
       ${canSee("ops") ? `<a href="#/ops" class="${["ops", "op"].includes(S.page) ? "on" : ""}">العمليات</a>` : ""}
@@ -988,10 +989,11 @@ function renderPatient(aid) {
   S.pageUnsubs.push(onSnapshot(doc(db, "admissions", aid), (snap) => {
     if (!snap.exists()) { shell(`<div class="empty">الملف غير موجود. <a href="#/">ارجع للأسرّة</a></div>`); return; }
     P.adm = { id: snap.id, ...snap.data() };
+    if (isDept()) P.pat = patFromAdm(P.adm);
     if (!P.subs) {
       P.subs = true;
-      S.pageUnsubs.push(onSnapshot(doc(db, "patients", P.adm.patientId), (ps) => { P.pat = ps.data() || {}; draw(); }));
-      S.pageUnsubs.push(onSnapshot(query(collection(db, "consults"), where("admissionId", "==", aid)), (s) => {
+      if (!isDept()) S.pageUnsubs.push(onSnapshot(doc(db, "patients", P.adm.patientId), (ps) => { P.pat = ps.data() || {}; draw(); }));
+      S.pageUnsubs.push(onSnapshot(consultsQ(aid), (s) => {
         P.creqs = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw();
       }, () => {}));
       for (const k of ["entries", "vitals", "meds"]) {
@@ -1003,6 +1005,7 @@ function renderPatient(aid) {
     }
     draw();
   }, () => {
+    if (isDept()) { toast("مبقاش ليك صلاحية على الحالة دي (تم الرد أو الحالة خرجت)"); location.hash = "#/"; return; }
     shell(`<div class="empty">ليس لديك صلاحية لعرض هذا الملف. الحالات اللي خرجت بتظهر للأدمن فقط. <a href="#/">ارجع للأسرّة</a></div>`);
   }));
 }
@@ -1022,8 +1025,8 @@ function drawPatient() {
 
   shell(`
   <div class="file-head">
-    <a class="back" href="#/unit/${a.unitId}">${esc(unit.name)}</a>
-    <h1><a href="#/p/${a.patientId}" class="plain" title="ملف المريض الشامل">${esc(p.name || a.patientName)}</a></h1>
+    <a class="back" href="${isDept() ? "#/" : `#/unit/${a.unitId}`}">${isDept() ? `قسم ${esc(S.profile.deptSpecialty)}` : esc(unit.name)}</a>
+    <h1>${isDept() ? esc(p.name || a.patientName) : `<a href="#/p/${a.patientId}" class="plain" title="ملف المريض الشامل">${esc(p.name || a.patientName)}</a>`}</h1>
     <div class="tags">
       ${p.medicalId ? `<span class="tag mr">${esc(p.medicalId)}</span>` : ""}
       <span class="tag">${esc(unit.bedLabel)} ${a.bed}</span>
@@ -1799,7 +1802,7 @@ async function tabUsers(body) {
   <div class="table-wrap"><table>
     <thead><tr><th>الاسم</th><th>اسم المستخدم</th>${Object.values(SECTIONS).map((l) => `<th>${l}</th>`).join("")}<th>طباعة</th><th>فترة التعديل</th><th>الحالة</th><th></th></tr></thead>
     <tbody>${list.map((u) => `<tr>
-      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">حساب قسم: ${esc(u.deptSpecialty)}</span>` : ""}</td>
+      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : ""}</td>
       <td class="ltr">${esc(u.username)}</td>
       ${Object.keys(SECTIONS).map((k) => `<td>${u.role === "admin" ? "كاملة" : `${levelLabel(secOf(u, k))}${k === "icu" && secOf(u, k) !== "none" ? `<div class="by-line">${esc(unitNames(u.units)) || "بدون وحدات"}</div>` : ""}`}</td>`).join("")}
       <td>${u.role === "admin" || u.print ? "نعم" : "—"}</td>
@@ -1841,7 +1844,8 @@ function openUserDialog(u, done) {
       <div class="checks">${units().map((x) => `<label><input type="checkbox" name="units" value="${x.id}" ${(u.units || []).includes(x.id) ? "checked" : ""}> ${esc(x.name)}</label>`).join("")}</div></div>
     <div class="checks doc-only"><label><input type="checkbox" name="print" ${u.print ? "checked" : ""}> صلاحية الطباعة و PDF</label></div>
     <label class="field dept-only"><span>القسم</span><select name="deptSpecialty">${optionsHtml(S.settings.specialties || [], u.deptSpecialty || "")}</select>
-      <span class="hint">الحساب ده بيشوف حالات القسم والإشراف المشترك والعروض بتاعته بس، وبيرد على العروض ويكتب رأيه في الإشراف المشترك.</span></label>
+      <span class="hint">المستخدم ده بيشوف حالات القسم والإشراف المشترك والعروض بتاعته بس، وبيرد على العروض ويكتب رأيه في الإشراف المشترك. ملوش دخول على أي قسم تاني.</span></label>
+    <div class="checks dept-only"><label><input type="checkbox" name="sharedAcc" ${u.shared ? "checked" : ""}> حساب مشترك (أكتر من طبيب بيدخلوا بيه، فبيسأل عن اسم الطبيب كل مرة)</label></div>
     <div class="field not-dept"><span>تخصص المستخدم (عشان توصله طلبات الاستشارة)</span>
       ${checksHtml("uspecs", S.settings.specialties || [], u.specialties || [])}</div>
     ${isNew ? "" : `<div class="checks"><label><input type="checkbox" name="active" ${u.active ? "checked" : ""} ${self ? "disabled" : ""}> الحساب مفعّل</label></div>`}
@@ -1850,10 +1854,10 @@ function openUserDialog(u, done) {
   </form>`);
   const f = document.getElementById("userForm");
   const sync = () => {
-    f.querySelectorAll(".doc-only").forEach((el) => el.classList.toggle("hidden", f.role.value === "admin"));
+    f.querySelectorAll(".doc-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "doctor"));
     f.querySelectorAll(".dept-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "dept"));
     f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", f.role.value === "dept"));
-    if (f.role.value !== "admin") document.getElementById("icuUnits").classList.toggle("hidden", f.querySelector('input[name="sec_icu"]:checked').value === "none");
+    if (f.role.value === "doctor") document.getElementById("icuUnits").classList.toggle("hidden", f.querySelector('input[name="sec_icu"]:checked').value === "none");
   };
   f.role.onchange = sync;
   f.querySelectorAll('input[name="sec_icu"]').forEach((r) => (r.onchange = sync));
@@ -1864,12 +1868,13 @@ function openUserDialog(u, done) {
     const err = document.getElementById("userErr");
     err.textContent = "";
     const role = self ? "admin" : f.role.value;
-    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
+    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : role === "dept" ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
     const data = {
       displayName: f.displayName.value.trim(), role, sections,
       access: ["none", "nurse"].includes(sections.icu) ? "read" : sections.icu,
       units: role === "admin" || sections.icu === "none" ? [] : checkedValues(f, "units"),
-      print: role === "admin" ? true : f.print.checked,
+      print: role === "admin" ? true : role === "dept" ? false : f.print.checked,
+      shared: role === "dept" ? f.elements.sharedAcc.checked : false,
       specialties: role === "dept" ? [f.deptSpecialty.value].filter(Boolean) : checkedValues(f, "uspecs").slice(0, 10),
       deptSpecialty: role === "dept" ? f.deptSpecialty.value : "",
       editWindowHours: Number(f.editWindowHours.value),
@@ -2282,6 +2287,7 @@ function openDischarge() {
     <label class="field df d-death"><span>سبب الوفاة</span><textarea name="deathCause" rows="2" class="ltr-auto"></textarea></label>
     ${wardUnits().length ? `<div class="row2 df d-ward"><label class="field"><span>قسم الداخلي</span><select name="wdept"></select></label>
       <label class="field"><span>السرير</span><select name="wbed"></select></label></div>
+      <label class="field df d-ward"><span>القسم المسؤول عن الحالة في الداخلي</span><select name="wresp">${optionsHtml(S.settings.specialties || [], respOf(a.consultant))}</select></label>
       <p class="hint df d-ward">هيتسجل دخول داخلي تلقائي على السرير ده، بنفس الاستشاري والمعاملة المالية وآخر تشخيص.</p>`
       : `<label class="field df d-ward"><span>القسم الداخلي المحول إليه</span><input name="ward"></label>`}
     <label class="field df d-transfer"><span>اسم المستشفى</span><input name="hospital"></label>
@@ -2298,8 +2304,9 @@ function openDischarge() {
       if (type === "death") { info.deathCause = f.elements.deathCause.value.trim(); if (!info.deathCause) return "اكتب سبب الوفاة."; }
       let toWard = null;
       if (type === "ward" && wardUnits().length) {
-        toWard = { dept: f.elements.wdept.value, bed: Number(f.elements.wbed.value) };
+        toWard = { dept: f.elements.wdept.value, bed: Number(f.elements.wbed.value), resp: f.elements.wresp.value };
         if (!toWard.dept || !toWard.bed) return "اختر قسم الداخلي والسرير.";
+        if ((S.settings.specialties || []).length && !toWard.resp) return "اختر القسم المسؤول عن الحالة في الداخلي.";
         info.ward = `${wardById(toWard.dept)?.name || ""}، سرير ${toWard.bed}`;
       } else if (type === "ward") { info.ward = f.elements.ward.value.trim(); if (!info.ward) return "اكتب القسم الداخلي."; }
       const lastDx = S.P.entries.filter((e) => e.kind === "diagnosis").sort(desc)[0]?.text || "";
@@ -2337,7 +2344,7 @@ function openDischarge() {
           const n = (pd.wardCount || 0) + 1;
           tx.set(wBed, { unitId: toWard.dept, bed: toWard.bed, admissionId: wRef.id, section: "ward", since: serverTimestamp() });
           tx.set(wRef, wardAdmissionData({ id: a.patientId, ...pd }, toWard.dept, toWard.bed, at,
-            { consultant: a.consultant, finance: finHist(a).pop()?.type || a.finance || "", specialties: a.specialties || [], diagnosis: lastDx },
+            { consultant: a.consultant, responsible: toWard.resp, finance: finHist(a).pop()?.type || a.finance || "", specialties: a.specialties || [], diagnosis: lastDx },
             n, pd.medicalId, { source: "icu", sourceId: a.id }));
           Object.assign(pUpd, { currentWardId: wRef.id, wardCount: (pd.wardCount || 0) + 1 });
           pUpd.visits.push(visitEntry("ward", wRef.id, `${pd.medicalId || ""}-D${n}`, Timestamp.fromDate(at), wardById(toWard.dept)?.name));
@@ -3246,9 +3253,10 @@ async function openWardAdmission(p, deptId, bed, extra = {}) {
     </div>
     <label class="field"><span>تاريخ ووقت الدخول</span><input name="admitAt" type="datetime-local" value="${toLocalInput(new Date())}" max="${toLocalInput(new Date())}"></label>
     <div class="row2">
-      <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], extra.consultant || "")}</select></label>
+      <label class="field"><span>استشاري الحالة</span><select name="consultant" data-autoresp>${optionsHtml(s.consultants || [], extra.consultant || "")}</select></label>
       <label class="field"><span>المعاملة المالية</span><select name="finance">${optionsHtml(listOf("financeTypes"), extra.finance || "")}</select></label>
     </div>
+    <label class="field"><span>القسم المسؤول (القسم اللي الحالة تحت إشرافه)</span><select name="responsible">${optionsHtml(s.specialties || [], extra.responsible || respOf(extra.consultant))}</select></label>
     <div class="field"><span>الإشراف المشترك</span>${checksHtml("spec", s.specialties || [], extra.specialties || [])}</div>
     <label class="field"><span>التشخيص</span><textarea name="diagnosis" rows="2" class="ltr-auto">${esc(extra.diagnosis || "")}</textarea></label>`,
     "حفظ الدخول", async (f) => {
@@ -3258,8 +3266,9 @@ async function openWardAdmission(p, deptId, bed, extra = {}) {
       if (isNaN(at) || at > new Date(Date.now() + 5 * 60e3)) return "تاريخ الدخول غير صحيح.";
       if (!f.elements.consultant.value) return "اختر استشاري الحالة.";
       if (!f.elements.finance.value) return "اختر المعاملة المالية.";
+      if ((s.specialties || []).length && !f.elements.responsible.value) return "اختر القسم المسؤول.";
       const id = await createWardAdmission(p, dept, b, at, {
-        consultant: f.elements.consultant.value, finance: f.elements.finance.value,
+        consultant: f.elements.consultant.value, finance: f.elements.finance.value, responsible: f.elements.responsible.value,
         specialties: checkedValues(f, "spec"), diagnosis: f.elements.diagnosis.value.trim(),
       });
       toast("تم تسجيل الدخول");
@@ -3275,11 +3284,11 @@ function wardAdmissionData(p, dept, bed, at, d, num, mr, source) {
     patientId: p.id, patientName: p.name, medicalId: mr || p.medicalId || "", nationalId: p.nationalId || "",
     gender: p.gender || "", birthDate: p.birthDate || "", birthDateEstimated: !!p.birthDateEstimated,
     deptId: dept, bed, admitAt: Timestamp.fromDate(at), admissionNumber: `${mr || p.medicalId || ""}-D${num}`, wardNo: num,
-    consultant: d.consultant || "", specialties: d.specialties || [], finance: d.finance || "",
+    consultant: d.consultant || "", responsible: d.responsible || "", specialties: d.specialties || [], finance: d.finance || "",
     financeHistory: d.finance ? [{ type: d.finance, from: isoDay(at), byName: S.profile.displayName }] : [],
     diagnosis: d.diagnosis || "", history: d.history || "", xrays: "", labs: "", requests: "",
     status: "active", ...(source || {}),
-    deptAccess: deptAccessOf({ consultant: d.consultant, specialties: d.specialties }),
+    deptAccess: deptAccessOf({ consultant: d.consultant, specialties: d.specialties, responsible: d.responsible }),
     createdBy: S.profile.uid, createdByName: S.profile.displayName, createdAt: serverTimestamp(),
   };
 }
@@ -3312,12 +3321,15 @@ function renderWardAdmission(id) {
   S.pageUnsubs.push(onSnapshot(doc(db, "wardAdmissions", id), (s) => {
     if (!s.exists()) { shell(`<div class="empty">الملف غير موجود.</div>`); return; }
     W.a = { id: s.id, ...s.data() };
-    if (!W.pSub) { W.pSub = true; S.pageUnsubs.push(onSnapshot(doc(db, "patients", W.a.patientId), (ps) => { W.p = { id: ps.id, ...ps.data() }; draw(); }, () => {})); }
+    if (!W.pSub && !isDept()) { W.pSub = true; S.pageUnsubs.push(onSnapshot(doc(db, "patients", W.a.patientId), (ps) => { W.p = { id: ps.id, ...ps.data() }; draw(); }, () => {})); }
     draw();
-  }, () => shell(`<div class="empty">ليس لديك صلاحية لعرض هذا الملف. الحالات اللي خرجت بتظهر للأدمن فقط. <a href="#/ward">ارجع للداخلي</a></div>`)));
+  }, () => {
+    if (isDept()) { toast("مبقاش ليك صلاحية على الحالة دي (تم الرد أو الحالة خرجت)"); location.hash = "#/"; return; }
+    shell(`<div class="empty">ليس لديك صلاحية لعرض هذا الملف. الحالات اللي خرجت بتظهر للأدمن فقط. <a href="#/ward">ارجع للداخلي</a></div>`);
+  }));
   S.pageUnsubs.push(onSnapshot(collection(db, "wardAdmissions", id, "opinions"), (s) => { W.ops = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(collection(db, "wardAdmissions", id, "notes"), (s) => { W.notes = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
-  S.pageUnsubs.push(onSnapshot(query(collection(db, "consults"), where("admissionId", "==", id)), (s) => { W.creqs = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
+  S.pageUnsubs.push(onSnapshot(consultsQ(id), (s) => { W.creqs = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(collection(db, "wardAdmissions", id, "medlog"), (s) => {
     W.meds = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw();
   }, () => {}));
@@ -3365,8 +3377,8 @@ function drawWardAdmission() {
   const txt = (v) => (v ? `<div class="pre-wrap ltr-auto">${esc(v)}</div>` : `<span class="muted">—</span>`);
   shell(`
   <div class="file-head">
-    <a class="back" href="#/ward/${a.deptId}">${esc(u.name)}</a>
-    <h1><a href="#/p/${a.patientId}" class="plain">${esc(a.patientName)}</a></h1>
+    <a class="back" href="${isDept() ? "#/" : `#/ward/${a.deptId}`}">${isDept() ? `قسم ${esc(S.profile.deptSpecialty)}` : esc(u.name)}</a>
+    <h1>${isDept() ? esc(a.patientName) : `<a href="#/p/${a.patientId}" class="plain">${esc(a.patientName)}</a>`}</h1>
     <div class="tags">
       ${a.medicalId ? `<span class="tag mr">${esc(a.medicalId)}</span>` : ""}
       <span class="tag">${esc(u.name)}، سرير ${a.bed}</span>
@@ -3432,7 +3444,8 @@ function openWardEdit(a) {
   const chips = (k) => listOf(`historyOptions.${k}`).map((o) => `<button type="button" class="opt" data-f="history" data-v="${esc(o)}">${esc(o)}</button>`).join("");
   const hist = ["complaint", "pmh", "psh", "drugs", "allergy"].map(chips).join("");
   formDialog("تعديل بيانات الدخول", `
-    <label class="field"><span>استشاري الحالة</span><select name="consultant">${optionsHtml(s.consultants || [], a.consultant)}</select></label>
+    <label class="field"><span>استشاري الحالة</span><select name="consultant" data-autoresp>${optionsHtml(s.consultants || [], a.consultant)}</select></label>
+    <label class="field"><span>القسم المسؤول</span><select name="responsible">${optionsHtml(s.specialties || [], a.responsible || respOf(a.consultant))}</select></label>
     <div class="field"><span>الإشراف المشترك</span>${checksHtml("spec", [...new Set([...(s.specialties || []), ...(a.specialties || [])])], a.specialties || [])}</div>
     ${listOf("diagnoses").length ? `<label class="field"><span>اختر من قائمة التشخيصات</span><input name="dxPick" list="dlDxW" class="ltr" autocomplete="off">
       <datalist id="dlDxW">${listOf("diagnoses").map((x) => `<option value="${esc(x)}">`).join("")}</datalist></label>` : ""}
@@ -3445,7 +3458,8 @@ function openWardEdit(a) {
 `,
     "حفظ التعديل", async (f) => {
       if (!f.elements.consultant.value) return "اختر استشاري الحالة.";
-      const upd = { consultant: f.elements.consultant.value, specialties: checkedValues(f, "spec"), deptAccess: [],
+      if ((s.specialties || []).length && !f.elements.responsible.value) return "اختر القسم المسؤول.";
+      const upd = { consultant: f.elements.consultant.value, responsible: f.elements.responsible.value, specialties: checkedValues(f, "spec"), deptAccess: [],
         diagnosis: f.elements.diagnosis.value.trim(), history: f.elements.history.value.trim(),
         xrays: f.elements.xrays.value.trim(), labs: f.elements.labs.value.trim(), requests: f.elements.requests.value.trim(), ...upMeta() };
       upd.deptAccess = deptAccessOf({ ...a, ...upd });
@@ -4874,7 +4888,7 @@ function consultListHtml(list, compact) {
       <div class="entry-head"><span class="pill">${esc(c.specialty)}</span>
         ${c.urgency === "عاجل" ? `<span class="dis t-death">عاجل</span>` : ""}
         <span class="dis ${c.status === "answered" ? "" : c.status === "pending" ? "op-scheduled" : "op-cancelled"}">${CONSULT_STATUS[c.status]}</span>
-        ${compact ? "" : `<a href="${c.source === "icu" ? `#/patient/${c.admissionId}` : `#/w/${c.admissionId}`}"><strong>${esc(c.patientName)}</strong></a><span class="muted">${esc(c.place)}</span>`}
+        ${compact ? "" : `${isDept() && c.status !== "pending" ? `<strong>${esc(c.patientName)}</strong>` : `<a href="${c.source === "icu" ? `#/patient/${c.admissionId}` : `#/w/${c.admissionId}`}"><strong>${esc(c.patientName)}</strong></a>`}<span class="muted">${esc(c.place)}</span>`}
         <span class="by-line">طلبه ${esc(c.fromName)}، ${fmtDateTime(c.createdAt)}</span>
         <span class="cs-acts">
           ${c.status === "pending" && (isAdmin() || mySpecs().includes(c.specialty)) ? `<button class="btn sm" data-cans="${c.id}">الرد</button>` : ""}
@@ -4888,7 +4902,9 @@ function bindConsultActions(container, list) {
   container.querySelectorAll("[data-cans]").forEach((b) => (b.onclick = () => openConsultAnswer(list.find((x) => x.id === b.dataset.cans))));
   container.querySelectorAll("[data-ccan]").forEach((b) => (b.onclick = async () => {
     if (!confirm("إلغاء طلب الاستشارة؟")) return;
-    try { await updateDoc(doc(db, "consults", b.dataset.ccan), { status: "cancelled", cancelledByName: S.profile.displayName, cancelledAt: serverTimestamp() }); toast("تم الإلغاء"); }
+    try { await updateDoc(doc(db, "consults", b.dataset.ccan), { status: "cancelled", cancelledByName: S.profile.displayName, cancelledAt: serverTimestamp() });
+      const cc = list.find((x) => x.id === b.dataset.ccan); if (cc) await revokeConsultAccess(cc);
+      toast("تم الإلغاء"); }
     catch (e) { toast(errText(e), true); }
   }));
 }
@@ -4902,6 +4918,7 @@ function openConsultAnswer(c) {
       if (!answer) return "اكتب الرد.";
       await updateDoc(doc(db, "consults", c.id), { status: "answered", answer, answeredBy: S.profile.uid, answeredByName: S.profile.displayName,
         answeredAt: serverTimestamp(), seenByRequester: false });
+      await revokeConsultAccess(c);
       audit(`رد على استشارة ${c.specialty}`, { adm: { id: c.admissionId, patientName: c.patientName, unitId: "" } });
       toast("تم إرسال الرد");
     });
@@ -4909,14 +4926,14 @@ function openConsultAnswer(c) {
 
 function renderConsults(tab = "in") {
   shell(`<nav class="tabs"><a href="#/consults" class="${tab === "in" ? "on" : ""}">الطلبات الواردة</a>
-    <a href="#/consults/mine" class="${tab === "mine" ? "on" : ""}">طلباتي</a></nav>
+    ${isDept() ? "" : `<a href="#/consults/mine" class="${tab === "mine" ? "on" : ""}">طلباتي</a>`}</nav>
     ${tab === "in" && !isAdmin() && !mySpecs().length ? `<div class="note">حسابك مش متحدد له تخصص، فمش هيوصلك طلبات. الأدمن يحدده من الإعدادات > المستخدمين.</div>` : ""}
     <div id="csBody"><div class="loading">جاري التحميل…</div></div>`);
   const body = document.getElementById("csBody");
   const col = collection(db, "consults");
-  const q = tab === "mine" ? query(col, where("fromUid", "==", S.profile.uid))
+  const q = tab === "mine" ? (isDept() ? null : query(col, where("fromUid", "==", S.profile.uid)))
     : isAdmin() ? query(col, orderBy("createdAt", "desc"), limit(200))
-    : mySpecs().length ? query(col, where("specialty", "in", mySpecs().slice(0, 10))) : null;
+    : mySpecs().length ? query(col, isDept() ? where("specialty", "==", S.profile.deptSpecialty) : where("specialty", "in", mySpecs().slice(0, 10))) : null;
   if (!q) { body.innerHTML = ""; return; }
   S.pageUnsubs.push(onSnapshot(q, async (s) => {
     const list = s.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -4938,9 +4955,9 @@ function subscribeConsults() {
   S.consultIn = []; S.consultAnswered = [];
   if (!S.profile) return;
   const col = collection(db, "consults");
-  if (mySpecs().length) consultUnsubs.push(onSnapshot(query(col, where("status", "==", "pending"), where("specialty", "in", mySpecs().slice(0, 10))),
+  if (mySpecs().length) consultUnsubs.push(onSnapshot(query(col, where("status", "==", "pending"), isDept() ? where("specialty", "==", S.profile.deptSpecialty) : where("specialty", "in", mySpecs().slice(0, 10))),
     (s) => { S.consultIn = s.docs.map((d) => ({ id: d.id, ...d.data() })); liveRefresh(); }, () => {}));
-  consultUnsubs.push(onSnapshot(query(col, where("fromUid", "==", S.profile.uid), where("seenByRequester", "==", false)),
+  if (!isDept()) consultUnsubs.push(onSnapshot(query(col, where("fromUid", "==", S.profile.uid), where("seenByRequester", "==", false)),
     (s) => { S.consultAnswered = s.docs.map((d) => ({ id: d.id, ...d.data() })); liveRefresh(); }, () => {}));
 }
 
@@ -5066,22 +5083,45 @@ setInterval(() => { const c = document.getElementById("bClock"); if (c) c.textCo
    ========================================================= */
 const isDept = () => S.profile?.role === "dept";
 const respOf = (consultant) => S.settings?.consultantSpecs?.[consultant] || "";
-// الأقسام اللي ليها حق تشوف الدخول: قسم الاستشاري + الإشراف المشترك + العروض اللي اتطلبت
-const deptAccessOf = (a) => [...new Set([respOf(a.consultant), ...(a.specialties || []), ...(a.consultSpecs || [])].filter(Boolean))];
+// القسم المسؤول: اللي اتحدد صراحة على الحالة، وإلا قسم الاستشاري
+const ownerOf = (a) => a.responsible || respOf(a.consultant);
+// الأقسام اللي ليها حق تشوف الحالة: المسؤول + الإشراف المشترك + أقسام اتطلب منها عرض لسه منتظر
+const deptAccessOf = (a) => [...new Set([ownerOf(a), ...(a.specialties || []), ...(a.consultSpecs || [])].filter(Boolean))];
+// حساب القسم مبيقدرش يقرأ غير عروض قسمه، فالاستعلام لازم يكون مقيد بقسمه
+const consultsQ = (admId) => isDept()
+  ? query(collection(db, "consults"), where("admissionId", "==", admId), where("specialty", "==", S.profile.deptSpecialty))
+  : query(collection(db, "consults"), where("admissionId", "==", admId));
+const patFromAdm = (a) => ({ name: a.patientName, medicalId: a.medicalId || "", nationalId: a.nationalId || "", idType: a.nationalId ? "nid" : "unknown",
+  birthDate: a.birthDate || "", birthDateEstimated: !!a.birthDateEstimated, gender: a.gender || "", isNewborn: !!a.isNewborn, admissionsCount: a.admissionNo || 1 });
 
-// اسم الطبيب في الحساب المشترك (بيتسأل مرة لكل جلسة)
+// بعد الرد على العرض (أو إلغائه) صلاحية القسم على الحالة بتنتهي، إلا لو هو المسؤول أو في الإشراف المشترك أو فيه عرض تاني منتظر
+async function revokeConsultAccess(c) {
+  try {
+    const pend = await getDocs(query(collection(db, "consults"), where("admissionId", "==", c.admissionId), where("specialty", "==", c.specialty), where("status", "==", "pending")));
+    if (pend.docs.some((d) => d.id !== c.id)) return;
+    const ref = doc(db, c.source === "icu" ? "admissions" : "wardAdmissions", c.admissionId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
+    const a = snap.data();
+    const consultSpecs = (a.consultSpecs || []).filter((x) => x !== c.specialty);
+    await updateDoc(ref, { consultSpecs, deptAccess: deptAccessOf({ ...a, consultSpecs }) });
+  } catch (e) { console.error("revoke", e); }
+}
+
+// اسم الطبيب: الحساب الشخصي بياخد اسمه، والمشترك بيسأل عن الاسم
 function applyDeptDoctor() {
   if (!isDept()) return;
-  S.profile.baseName = S.profile.baseName || S.profile.displayName;
-  const d = sessionStorage.getItem("deptDoctor_" + S.profile.uid);
-  S.profile.doctorName = d || "";
+  S.profile.baseName = S.profile.displayName;
+  if (!S.profile.shared) { S.profile.doctorName = S.profile.displayName; return; }
+  const d = sessionStorage.getItem("deptDoctor_" + S.profile.uid) || "";
+  S.profile.doctorName = d;
   S.profile.displayName = d ? `${S.profile.baseName} (${d})` : S.profile.baseName;
   if (!d) setTimeout(askDeptDoctor, 0);
 }
 function askDeptDoctor() {
-  if (!isDept() || dlg.open) return;
+  if (!isDept() || !S.profile.shared || dlg.open) return;
   openDialog(`<form class="form" id="ddF"><header class="dlg-head"><h3>مين بيستخدم الحساب؟</h3>
-      <p>ده حساب مشترك لـ ${esc(S.profile.deptSpecialty)}. اكتب اسمك عشان يتسجل مع أي حاجة تكتبها.</p></header>
+      <p>ده حساب مشترك لقسم ${esc(S.profile.deptSpecialty)}. اكتب اسمك عشان يتسجل مع أي حاجة تكتبها.</p></header>
     <label class="field"><span>اسم الطبيب</span><input name="doc" required autofocus placeholder="د. …" value="${esc(S.profile.doctorName || "")}"></label>
     <div class="err" id="ddErr"></div><div class="actions"><button class="btn">متابعة</button></div></form>`);
   dlg.oncancel = (e) => { if (!S.profile.doctorName) e.preventDefault(); };
@@ -5096,9 +5136,15 @@ function askDeptDoctor() {
     closeDialog(); S._lastHash = null; route();
   };
 }
-
-// الحساب المشترك يكتب رأيه في الإشراف المشترك بتاع حالاته
 const deptCanOpinion = (a) => isDept() && a.status === "active" && (a.deptAccess || []).includes(S.profile.deptSpecialty);
+
+// لما تختار استشاري في الداخلي، القسم المسؤول بيتملا لوحده لو الاستشاري متحدد له قسم
+document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (!t.matches?.('select[name="consultant"][data-autoresp]')) return;
+  const r = respOf(t.value), sel = t.form?.elements?.responsible;
+  if (r && sel && !sel.value) sel.value = r;
+});
 
 /* ---------- الصفحة الرئيسية للقسم ---------- */
 function renderDeptHome(spec) {
@@ -5127,32 +5173,45 @@ async function loadDx(D) {
   if (S.D === D && S.page === "dept") drawDeptHome();
 }
 function drawDeptHome() {
-  const D = S.D, spec = D.spec;
+  const D = S.D, spec = D.spec, specs = S.settings.specialties || [];
   const loading = D.icu === null || D.ward === null || D.cons === null;
   const all = [...(D.icu || []), ...(D.ward || [])];
-  const own = all.filter((a) => respOf(a.consultant) === spec);
-  const co = all.filter((a) => respOf(a.consultant) !== spec && (a.specialties || []).includes(spec));
+  const own = all.filter((a) => ownerOf(a) === spec);
+  const ownWard = own.filter((a) => a._t === "ward"), ownIcu = own.filter((a) => a._t === "icu");
+  const co = all.filter((a) => ownerOf(a) !== spec && (a.specialties || []).includes(spec));
   const pend = (D.cons || []).filter((c) => c.status === "pending");
+  const urgent = pend.filter((c) => c.urgency === "عاجل").length;
   const done = (D.cons || []).filter((c) => c.status !== "pending").sort((x, y) => toDate(y.createdAt) - toDate(x.createdAt)).slice(0, 20);
-  const row = (a) => `<tr>
+  const longStay = own.filter((a) => stayDays(a) > 7).length;
+  const avg = ownWard.length ? Math.round((ownWard.reduce((s, a) => s + stayDays(a), 0) / ownWard.length) * 10) / 10 : 0;
+  const row = (a, showOwner) => `<tr>
     <td><a href="${a._t === "icu" ? `#/patient/${a.id}` : `#/w/${a.id}`}"><strong>${esc(a.patientName)}</strong></a><div class="by-line ltr">${esc(a.medicalId || "")}</div></td>
-    <td>${a._t === "icu" ? `رعاية: ${esc(unitName(a.unitId))}` : `داخلي: ${esc(wardById(a.deptId)?.name || "")}`}، ${a._t === "icu" ? esc(bedName(a.unitId, a.bed)) : `سرير ${a.bed}`}</td>
-    <td>${esc(ageText(a.birthDate, a.birthDateEstimated))}</td><td>اليوم ${stayDays(a)}</td><td>${esc(a.consultant || "")}</td>
+    <td>${a._t === "icu" ? `رعاية: ${esc(unitName(a.unitId))}، ${esc(bedName(a.unitId, a.bed))}` : `${esc(wardById(a.deptId)?.name || "")}، سرير ${a.bed}`}</td>
+    <td>${esc(ageText(a.birthDate, a.birthDateEstimated))}</td>
+    <td class="${stayDays(a) > 7 ? "wait" : ""}"><strong>${stayDays(a)}</strong> يوم</td><td>${esc(a.consultant || "")}</td>
+    ${showOwner ? `<td>${esc(ownerOf(a) || "—")}</td>` : ""}
     <td class="ltr-auto">${esc(((a._t === "icu" ? D.dx?.[a.id] : a.diagnosis) || "").split("\n")[0])}</td>
     <td>${a._t === "icu" && a.clinical?.resp ? `<span class="pill">${RESP_SHORT[a.clinical.resp]}</span>` : ""}</td></tr>`;
-  const table = (list) => list.length ? `<div class="table-wrap"><table><thead><tr><th>المريض</th><th>المكان</th><th>السن</th><th>الإقامة</th><th>الاستشاري</th><th>التشخيص</th><th></th></tr></thead>
-    <tbody>${list.sort((x, y) => toDate(x.admitAt) - toDate(y.admitAt)).map(row).join("")}</tbody></table></div>` : `<p class="muted">لا يوجد.</p>`;
+  const table = (list, showOwner) => list.length ? `<div class="table-wrap"><table><thead><tr><th>المريض</th><th>المكان</th><th>السن</th><th>الإقامة</th><th>الاستشاري</th>${showOwner ? "<th>القسم المسؤول</th>" : ""}<th>التشخيص</th><th></th></tr></thead>
+    <tbody>${[...list].sort((x, y) => toDate(x.admitAt) - toDate(y.admitAt)).map((a) => row(a, showOwner)).join("")}</tbody></table></div>` : `<p class="muted">لا يوجد.</p>`;
   shell(`
-  ${isAdmin() ? `<nav class="unit-bar">${(S.settings.specialties || []).map((x) => `<a href="#/dept/${encodeURIComponent(x)}" class="chip ${x === spec ? "on" : ""}">${esc(x)}</a>`).join("")}</nav>` : ""}
-  <div class="toolbar"><h2>قسم ${esc(spec)}</h2>${isDept() ? `<button class="btn ghost sm" id="chDoc">تغيير اسم الطبيب (${esc(S.profile.doctorName || "")})</button>` : ""}</div>
+  ${isAdmin() ? `<nav class="unit-bar">${specs.map((x) => `<a href="#/dept/${encodeURIComponent(x)}" class="chip ${x === spec ? "on" : ""}">${esc(x)}</a>`).join("")}</nav>` : ""}
+  <div class="toolbar"><h2>قسم ${esc(spec)}</h2>${isDept() && S.profile.shared ? `<button class="btn ghost sm" id="chDoc">تغيير اسم الطبيب (${esc(S.profile.doctorName || "")})</button>` : ""}</div>
   ${D.err ? `<div class="err">${esc(D.err)}</div>` : ""}
+  ${pend.length ? `<div class="alert-bar ${urgent ? "urgent" : ""}">🩺 عندك <strong>${pend.length}</strong> ${pend.length === 1 ? "عرض منتظر" : "عروض منتظرة"}${urgent ? `، منهم <strong>${urgent}</strong> عاجل` : ""}.</div>` : ""}
   ${loading ? `<div class="loading">جاري التحميل…</div>` : ""}
-  <div class="kpis"><div class="kpi"><strong>${own.length}</strong><span>حالات القسم</span></div>
+  <div class="kpis">
+    <div class="kpi"><strong>${ownWard.length}</strong><span>حالات القسم في الداخلي</span></div>
+    ${ownIcu.length ? `<div class="kpi"><strong>${ownIcu.length}</strong><span>حالات القسم في الرعاية</span></div>` : ""}
     <div class="kpi"><strong>${co.length}</strong><span>إشراف مشترك</span></div>
-    <div class="kpi ${pend.some((c) => c.urgency === "عاجل") ? "hot" : ""}"><strong>${pend.length}</strong><span>عروض منتظرة</span></div></div>
-  <section class="panel stack-gap" id="dPend"><header><h2>العروض المنتظرة (${pend.length})</h2></header>${consultListHtml(pend)}</section>
-  <section class="panel stack-gap"><header><h2>حالات القسم (${own.length})</h2></header>${table(own)}</section>
-  <section class="panel stack-gap"><header><h2>حالات الإشراف المشترك (${co.length})</h2></header>${table(co)}</section>
+    <div class="kpi ${urgent ? "hot" : ""}"><strong>${pend.length}</strong><span>عروض منتظرة</span></div>
+    <div class="kpi"><strong>${avg}</strong><span>متوسط إقامة الداخلي (يوم)</span></div>
+    ${longStay ? `<div class="kpi hot"><strong>${longStay}</strong><span>إقامة أكتر من 7 أيام</span></div>` : ""}
+  </div>
+  <section class="panel stack-gap" id="dPend"><header><h2>العروض المطلوبة من القسم (${pend.length})</h2></header>${consultListHtml(pend)}</section>
+  <section class="panel stack-gap"><header><h2>حالات القسم في الداخلي (${ownWard.length})</h2></header>${table(ownWard, false)}</section>
+  ${ownIcu.length ? `<section class="panel stack-gap"><header><h2>حالات القسم في الرعاية المركزة (${ownIcu.length})</h2></header>${table(ownIcu, false)}</section>` : ""}
+  <section class="panel stack-gap"><header><h2>حالات الإشراف المشترك (${co.length})</h2></header>${table(co, true)}</section>
   <section class="panel stack-gap" id="dDone"><header><h2>آخر العروض المردود عليها</h2></header>${consultListHtml(done)}</section>`);
   bindConsultActions(document.getElementById("dPend"), D.cons || []);
   document.getElementById("chDoc")?.addEventListener("click", () => { sessionStorage.removeItem("deptDoctor_" + S.profile.uid); S.profile.doctorName = ""; askDeptDoctor(); });
@@ -5171,7 +5230,7 @@ function openWardOpinion(a) {
   formDialog("رأي الإشراف المشترك", `
     <div class="row2">
       <label class="field"><span>التخصص</span>${fixed ? `<input value="${esc(fixed)}" disabled>` : `<select name="specialty">${optionsHtml(specs, "")}</select>`}</label>
-      <label class="field"><span>اسم الطبيب</span><input name="doctor" value="${esc(S.profile.doctorName || (isDept() ? "" : S.profile.displayName))}"></label>
+      <label class="field"><span>اسم الطبيب</span><input name="doctor" value="${esc(S.profile.doctorName || S.profile.displayName)}"></label>
     </div>
     <label class="field"><span>الرأي والتوصيات</span><textarea name="opinion" rows="5" class="ltr-auto"></textarea></label>`,
     "حفظ الرأي", async (f) => {
@@ -5189,13 +5248,13 @@ function tabDeptMap(body) {
   const specs = S.settings.specialties || [];
   body.innerHTML = `
   <div class="toolbar"><h2>الاستشاريين والأقسام</h2></div>
-  <p class="muted">حدد قسم كل استشاري. البرنامج بيستخدمه عشان يعرف "حالات القسم": أي مريض استشاريه من الجراحة مثلاً يظهر في صفحة قسم الجراحة. وحالات الإشراف المشترك والعروض بتظهر تلقائياً من غير إعداد.</p>
+  <p class="muted">حالات الداخلي ليها خانة <strong>القسم المسؤول</strong> بتتختار عند الدخول. هنا بتحدد قسم كل استشاري عشان الخانة دي تتملا لوحدها، وعشان حالات الرعاية (اللي ملهاش القسم المسؤول) تتنسب لقسم الاستشاري.</p>
   <div class="table-wrap"><table class="units-edit"><thead><tr><th>الاستشاري</th><th>القسم</th></tr></thead>
     <tbody>${(S.settings.consultants || []).map((c, i) => `<tr><td>${esc(c)}</td><td><select data-c="${i}">${optionsHtml(specs, map[c] || "", "بدون قسم")}</select></td></tr>`).join("")
       || `<tr><td colspan="2" class="muted">ضيف الاستشاريين الأول من الإعدادات > القوائم.</td></tr>`}</tbody></table></div>
   <div class="err" id="dmErr" style="margin-top:10px"></div>
   <div class="actions" style="margin-top:12px"><button class="btn" id="dmSave">حفظ وتحديث الحالات الحالية</button></div>
-  <div class="note" style="margin-top:16px">عشان تعمل <strong>حساب لقسم</strong>: من المستخدمين، أضف مستخدم واختار نوع الحساب "حساب قسم"، وحدد القسم. أي حد يدخل بالحساب ده هيتسأل عن اسمه أول مرة، والاسم ده بيتسجل مع كل حاجة يكتبها.</div>`;
+  <div class="note" style="margin-top:16px">عشان تعمل <strong>مستخدم لقسم</strong> (زي د. محمد حسن، قسم العظام): من المستخدمين أضف مستخدم، واختار نوع الحساب "حساب قسم"، وحدد القسم. لو هيستخدمه أكتر من طبيب علّم "حساب مشترك".</div>`;
   document.getElementById("dmSave").onclick = async (ev) => {
     const btn = ev.currentTarget; btn.disabled = true;
     const newMap = {};
@@ -5209,17 +5268,26 @@ function tabDeptMap(body) {
     btn.disabled = false;
   };
 }
-// تحديث صلاحية الأقسام على الحالات الموجودة حالياً (أدمن)
+// تحديث صلاحيات الأقسام على الحالات الموجودة (أدمن): القسم المسؤول + الإشراف المشترك + العروض المنتظرة بس
 async function backfillDeptAccess() {
-  const [icu, ward] = await Promise.all([
+  const [icu, ward, cons] = await Promise.all([
     getDocs(query(collection(db, "admissions"), where("status", "==", "active"))),
     getDocs(query(collection(db, "wardAdmissions"), where("status", "==", "active"))),
+    getDocs(query(collection(db, "consults"), where("status", "==", "pending"))),
   ]);
-  const b = writeBatch(db); let n = 0;
+  const pend = {};
+  cons.docs.forEach((d) => { const c = d.data(); (pend[c.admissionId] ||= new Set()).add(c.specialty); });
+  const norm = (arr) => JSON.stringify([...(arr || [])].sort());
+  const todo = [];
   for (const d of [...icu.docs, ...ward.docs]) {
-    const acc = deptAccessOf(d.data());
-    if (JSON.stringify(acc) !== JSON.stringify(d.data().deptAccess || [])) { b.update(d.ref, { deptAccess: acc }); n++; }
+    const x = d.data(), consultSpecs = [...(pend[d.id] || [])];
+    const acc = deptAccessOf({ ...x, consultSpecs });
+    if (norm(acc) !== norm(x.deptAccess) || norm(consultSpecs) !== norm(x.consultSpecs)) todo.push([d.ref, { deptAccess: acc, consultSpecs }]);
   }
-  if (n) await b.commit();
-  return n;
+  for (let i = 0; i < todo.length; i += 400) {
+    const b = writeBatch(db);
+    todo.slice(i, i + 400).forEach(([ref, data]) => b.update(ref, data));
+    await b.commit();
+  }
+  return todo.length;
 }
