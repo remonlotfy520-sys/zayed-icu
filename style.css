@@ -507,3 +507,33 @@ table.ho .pill{margin:0 0 3px 3px}
 /* ---------- صفحة القسم ---------- */
 .alert-bar{background:#E6EEF8;border:1px solid #BFD3EA;color:#1D3F66;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:15px}
 .alert-bar.urgent{background:var(--danger-soft);border-color:#EFC2C2;color:var(--danger)}
+
+/* ---------- غرف الداخلي ---------- */
+.rooms{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;align-items:start}
+.room{border:2px solid var(--rc);border-radius:12px;overflow:hidden;background:#fff}
+.room-head{background:var(--rc);color:var(--rt);display:flex;justify-content:space-between;align-items:center;padding:6px 12px;font-size:14.5px}
+.room-head span{font-size:12.5px;opacity:.9}
+.room-beds{display:grid;gap:8px;padding:8px}
+.room .bed{min-height:84px}
+.room .bed.occ{background:var(--rc);color:var(--rt)}
+.room .bed.occ:hover{filter:brightness(.92)}
+.room .bed.occ .bed-no,.room .bed.occ .bed-meta,.room .bed.occ .bed-day small{color:inherit;opacity:.88}
+.room .bed.free{border-color:var(--rc);border-style:dashed;color:var(--muted)}
+.room button.bed.free:hover{border-style:solid;background:#fff;color:var(--ink)}
+.type-chip{display:inline-block;border-radius:999px;padding:1px 12px;font-size:13px}
+.color-in{width:56px;height:34px;padding:2px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer}
+.dept-edit{margin-bottom:14px}
+.dept-edit > header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.dept-name{font-size:17px;font-weight:700;border:1px solid var(--line);border-radius:8px;padding:6px 10px;min-width:200px}
+.add-room{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+.add-room select,.add-room input{border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+
+/* ---------- التمريض ---------- */
+.bed-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.nb2{border-radius:999px;font-size:11.5px;padding:0 7px;background:rgba(255,255,255,.92);color:var(--ink);font-weight:600;line-height:1.6}
+.nb2.c{color:#1D3F66}
+.nb2.i{color:var(--amber)}
+.nb2.o{color:var(--danger)}
+.nb2.v{color:var(--danger)}
+.linkbtn.give{color:var(--teal);font-weight:700}
+td.c-on em.given{color:var(--free);font-weight:700}
