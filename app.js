@@ -198,7 +198,7 @@ const checkedValues = (form, name) => [...form.querySelectorAll(`input[name="${n
 onSnapshot(doc(db, "config", "settings"), (snap) => {
   S.settings = snap.exists() ? snap.data() : null;
   document.title = (S.settings?.hospitalName ? S.settings.hospitalName + " | " : "") + "الرعاية المركزة";
-  if (S.profile) subscribeAdmissions();
+  if (S.profile) { subscribeAdmissions(); if (wardKeyNow() !== S.wardKey) subscribeSections(); }
   route();
 }, (e) => {
   root.innerHTML = `<div class="boot">تعذر الاتصال بقاعدة البيانات. تأكد من إعدادات Firebase.<br><small>${esc(e.message)}</small></div>`;
@@ -278,6 +278,7 @@ function route() {
   const page = parts[0] || "";
   if (isDept() && !["", "home", "dept", "patient", "w", "consults"].includes(page)) { location.hash = "#/"; return; }
   if (isClerk() && !["", "home", "patients"].includes(page)) { location.hash = "#/"; return; }
+  if (isNurseRole() && !["", "home", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "o"].includes(page)) { location.hash = "#/"; return; }
   const newKey = location.hash;
   // لو نفس الصفحة ومفيش غير تحديث بيانات، متعيدش فتح المستمعين
   if (S._lastHash === newKey && S.page && S.page !== "login" && S.page !== "setup") {
@@ -287,7 +288,9 @@ function route() {
   S._lastHash = newKey;
   cleanupPage();
 
-  if ((page === "" || page === "home") && isClerk()) {
+  if ((page === "" || page === "home") && isNurseRole()) {
+    S.page = "nurse"; renderNurseHome();
+  } else if ((page === "" || page === "home") && isClerk()) {
     S.page = "clerk"; renderClerkHome();
   } else if ((page === "" || page === "home") && isDept()) {
     S.page = "dept"; renderDeptHome();
@@ -352,8 +355,8 @@ function shell(inner) {
       <span><strong>${esc(s.hospitalName)}</strong><small>نظام المستشفى</small></span>
     </a>
     <nav class="nav">
-      <a href="#/" class="${["home", "dept", "clerk"].includes(S.page) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
-      ${isDept() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
+      <a href="#/" class="${["home", "dept", "clerk", "nurse"].includes(S.page) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
+      ${isDept() || isNurseRole() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
       ${canSee("icu") ? `<a href="#/icu" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
       ${canSee("ward") ? `<a href="#/ward" class="${["ward", "wadm"].includes(S.page) ? "on" : ""}">الداخلي</a>` : ""}
       ${canSee("ops") ? `<a href="#/ops" class="${["ops", "op"].includes(S.page) ? "on" : ""}">العمليات</a>` : ""}
@@ -987,7 +990,7 @@ function formDialog(title, fieldsHtml, submitLabel, onSave, onDelete) {
 function renderPatient(aid) {
   shell(`<div class="loading">جاري تحميل ملف المريض…</div>`);
   const prevTab = S.P?.aid === aid ? S.P.tab : "info";
-  const P = (S.P = { aid, adm: null, pat: null, entries: [], vitals: [], meds: [], tab: prevTab, showHist: false, scroll: {}, subs: false });
+  const P = (S.P = { aid, adm: null, pat: null, entries: [], vitals: [], meds: [], mar: [], tab: prevTab, showHist: false, scroll: {}, subs: false });
   const draw = () => { if (S.P === P && S.page === "patient" && P.adm && P.pat) drawPatient(); };
   S.pageUnsubs.push(onSnapshot(doc(db, "admissions", aid), (snap) => {
     if (!snap.exists()) { shell(`<div class="empty">الملف غير موجود. <a href="#/">ارجع للأسرّة</a></div>`); return; }
@@ -999,7 +1002,7 @@ function renderPatient(aid) {
       S.pageUnsubs.push(onSnapshot(consultsQ(aid), (s) => {
         P.creqs = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw();
       }, () => {}));
-      for (const k of ["entries", "vitals", "meds"]) {
+      for (const k of ["entries", "vitals", "meds", "mar"]) {
         S.pageUnsubs.push(onSnapshot(collection(db, "admissions", aid, k), (s) => {
           P[k] = s.docs.map((d) => ({ id: d.id, ...d.data() }));
           draw();
@@ -1029,7 +1032,7 @@ function drawPatient() {
   shell(`
   <div class="file-head">
     <a class="back" href="${isDept() ? "#/" : `#/unit/${a.unitId}`}">${isDept() ? `قسم ${esc(S.profile.deptSpecialty)}` : esc(unit.name)}</a>
-    <h1>${isDept() ? esc(p.name || a.patientName) : `<a href="#/p/${a.patientId}" class="plain" title="ملف المريض الشامل">${esc(p.name || a.patientName)}</a>`}</h1>
+    <h1>${isDept() || isNurseRole() ? esc(p.name || a.patientName) : `<a href="#/p/${a.patientId}" class="plain" title="ملف المريض الشامل">${esc(p.name || a.patientName)}</a>`}</h1>
     <div class="tags">
       ${p.medicalId ? `<span class="tag mr">${esc(p.medicalId)}</span>` : ""}
       <span class="tag">${esc(unit.bedLabel)} ${a.bed}</span>
@@ -1089,6 +1092,8 @@ function onPatientClick(ev) {
     case "invResult": openInvResult(ent()); break;
     case "vAdd": openVitals(); break;
     case "nAdd": openNursingNote(); break;
+    case "mGive": openMarGive(P.meds.find((x) => x.id === id)); break;
+    case "marDel": if (confirm("حذف تسجيل الإعطاء ده؟")) pDel(subRef("mar", id)).then(() => toast("تم الحذف")).catch((e) => toast(errText(e), true)); break;
     case "nEdit": openNursingNote(ent()); break;
     case "consultReq": openConsultRequest("icu", P.adm); break;
     case "vEdit": openVitals(P.vitals.find((x) => x.id === id)); break;
@@ -1487,7 +1492,7 @@ function ptVitals() {
   const P = S.P, a = P.adm;
   const fields = unitVitals(unitById(a.unitId));
   const rs = [...P.vitals].sort(asc);
-  const head = `<div class="toolbar"><h2>العلامات الحيوية وتطور الحالة</h2>${pCanNurse() ? `<button class="btn" data-act="vAdd">إضافة قراءة</button>` : ""}</div>`;
+  const head = `<div class="toolbar"><h2>العلامات الحيوية وتطور الحالة</h2>${pCanVitals() ? `<button class="btn" data-act="vAdd">إضافة قراءة</button>` : ""}</div>`;
   if (!rs.length) return head + `<div class="empty">لا يوجد قراءات مسجلة. كل قراءة بتظهر كعمود بتاريخها ووقتها.</div>`;
 
   const groups = [];
@@ -1496,7 +1501,7 @@ function ptVitals() {
     if (groups.length && groups[groups.length - 1].day === d) groups[groups.length - 1].n++;
     else groups.push({ day: d, n: 1 });
   });
-  const colHead = (r) => pCanEditN(r.at)
+  const colHead = (r) => pCanEditV(r.at)
     ? `<button class="col-btn" data-act="vEdit" data-id="${r.id}" title="تعديل القراءة">${fmtTime(r.at)}<small>${shiftName(r.at)}</small></button>`
     : `${fmtTime(r.at)}<small>${shiftName(r.at)}</small>`;
   return head + `
@@ -1563,11 +1568,15 @@ function ptMeds() {
     if (!d) return `<td></td>`;
     const changed = d.from === day && day !== m.startDate;
     const dn = m.duration ? `<em>${medDayNo(m, day)}/${m.duration}</em>` : "";
-    return `<td class="c-on ${changed ? "c-chg" : ""} ${end === day ? "c-last" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small>${dn}</td>`;
+    const mc = marCount(m, day);
+    return `<td class="c-on ${changed ? "c-chg" : ""} ${end === day ? "c-last" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small>${dn}${mc ? `<em class="given">✓ ${mc}</em>` : ""}</td>`;
   };
+  const marCount = (m, day) => (P.mar || []).filter((e) => e.medId === m.id && isoDay(toDate(e.givenAt)) === day).length;
+  const canGive = pCanNurse();
   const acts = (m) => {
-    if (!add) return "";
-    const b = [];
+    const g = canGive && !m.stopDate && !medEnded(m) ? `<button class="linkbtn give" data-act="mGive" data-id="${m.id}">تسجيل إعطاء</button>` : "";
+    if (!add) return g ? `<span class="row-acts">${g}</span>` : "";
+    const b = [g];
     if (!m.stopDate) b.push(`<button class="linkbtn" data-act="mChange" data-id="${m.id}">${medEnded(m) ? "تمديد" : "تغيير الجرعة"}</button>`,
       `<button class="linkbtn" data-act="mStop" data-id="${m.id}">إيقاف</button>`);
     else if (isAdmin() || (minEdit && m.stopDate >= minEdit)) b.push(`<button class="linkbtn" data-act="mResume" data-id="${m.id}">إلغاء الإيقاف</button>`);
@@ -1594,7 +1603,7 @@ function ptMeds() {
           ${acts(m)}
         </th>${days.map((d) => cell(m, d)).join("")}</tr>`;
     }).join("")}</tbody>
-  </table></div>`;
+  </table></div>${marLogHtml()}`;
 }
 
 function openMed() {
@@ -1805,9 +1814,9 @@ async function tabUsers(body) {
   <div class="table-wrap"><table>
     <thead><tr><th>الاسم</th><th>اسم المستخدم</th>${Object.values(SECTIONS).map((l) => `<th>${l}</th>`).join("")}<th>طباعة</th><th>فترة التعديل</th><th>الحالة</th><th></th></tr></thead>
     <tbody>${list.map((u) => `<tr>
-      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clerk" ? ` <span class="pill">إداري</span>` : ""}</td>
+      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clerk" ? ` <span class="pill">إداري</span>` : u.role === "nurse" ? ` <span class="pill">تمريض${u.shared ? " (مشترك)" : ""}</span>` : ""}</td>
       <td class="ltr">${esc(u.username)}</td>
-      ${Object.keys(SECTIONS).map((k) => `<td>${u.role === "admin" ? "كاملة" : `${levelLabel(secOf(u, k))}${k === "icu" && secOf(u, k) !== "none" ? `<div class="by-line">${esc(unitNames(u.units)) || "بدون وحدات"}</div>` : ""}`}</td>`).join("")}
+      ${Object.keys(SECTIONS).map((k) => `<td>${u.role === "admin" ? "كاملة" : `${levelLabel(secOf(u, k))}${k === "icu" && secOf(u, k) !== "none" ? `<div class="by-line">${esc(unitNames(u.units)) || "بدون وحدات"}</div>` : ""}${k === "ward" && secOf(u, k) !== "none" ? `<div class="by-line">${Array.isArray(u.wardDepts) ? esc(u.wardDepts.map((id) => wardById(id)?.name).filter(Boolean).join("، ")) || "بدون أقسام" : "كل الأقسام"}</div>` : ""}`}</td>`).join("")}
       <td>${u.role === "admin" || u.print ? "نعم" : "—"}</td>
       <td>${u.role === "admin" ? "مفتوحة" : `${u.editWindowHours || 12} ساعة`}</td>
       <td>${u.active ? "مفعّل" : `<span class="status-off">موقوف</span>`}</td>
@@ -1835,16 +1844,27 @@ function openUserDialog(u, done) {
     </div>` : ""}
     <div class="row2">
       <label class="field"><span>نوع الحساب</span>
-        <select name="role" ${self ? "disabled" : ""}><option value="doctor" ${!["admin", "dept", "clerk"].includes(u.role) ? "selected" : ""}>مستخدم</option><option value="dept" ${u.role === "dept" ? "selected" : ""}>حساب قسم</option><option value="clerk" ${u.role === "clerk" ? "selected" : ""}>حساب إداري (تسجيل بيانات الدخول فقط)</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>أدمن</option></select></label>
+        <select name="role" ${self ? "disabled" : ""}><option value="doctor" ${!["admin", "dept", "clerk", "nurse"].includes(u.role) ? "selected" : ""}>مستخدم</option><option value="dept" ${u.role === "dept" ? "selected" : ""}>حساب قسم</option><option value="clerk" ${u.role === "clerk" ? "selected" : ""}>حساب إداري (تسجيل بيانات الدخول فقط)</option><option value="nurse" ${u.role === "nurse" ? "selected" : ""}>حساب تمريض</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>أدمن</option></select></label>
       <label class="field"><span>فترة التعديل في الرعاية</span>
         <select name="editWindowHours"><option value="12" ${u.editWindowHours !== 24 ? "selected" : ""}>12 ساعة (الشيفت الحالي)</option><option value="24" ${u.editWindowHours === 24 ? "selected" : ""}>24 ساعة (الشيفت الحالي واللي قبله)</option></select></label>
     </div>
     <div class="doc-only perm-grid">
-      ${Object.entries(SECTIONS).map(([k, l]) => `<div class="field"><span>${l}</span><fieldset class="seg">${Object.entries(levelsFor(k)).map(([lv, ll]) =>
+      ${Object.entries(SECTIONS).map(([k, l]) => `<div class="field"><span>${l}</span><fieldset class="seg">${Object.entries(levelsFor(k)).filter(([lv]) => lv !== "nurse" || secOf(k) === "nurse").map(([lv, ll]) =>
         `<label><input type="radio" name="sec_${k}" value="${lv}" ${secOf(k) === lv ? "checked" : ""}> ${ll}</label>`).join("")}</fieldset></div>`).join("")}
     </div>
     <div class="field doc-only" id="icuUnits"><span>وحدات الرعاية المسموح بيها</span>
       <div class="checks">${units().map((x) => `<label><input type="checkbox" name="units" value="${x.id}" ${(u.units || []).includes(x.id) ? "checked" : ""}> ${esc(x.name)}</label>`).join("")}</div></div>
+    <div class="field doc-only" id="wardDeptsBox"><span>أقسام الداخلي المسموح بيها</span>
+      <div class="checks">${wardUnits().map((x) => `<label><input type="checkbox" name="wdepts" value="${x.id}" ${(Array.isArray(u.wardDepts) ? u.wardDepts.includes(x.id) : true) ? "checked" : ""}> ${esc(x.name)}</label>`).join("") || `<span class="muted">ضيف أقسام الداخلي الأول.</span>`}</div></div>
+    <div class="field nurse-only"><span>تمريض الرعاية: الوحدات</span>
+      <div class="checks">${units().map((x) => `<label><input type="checkbox" name="nunits" value="${x.id}" ${u.role === "nurse" && (u.units || []).includes(x.id) ? "checked" : ""}> ${esc(x.name)}</label>`).join("")}</div></div>
+    <div class="field nurse-only"><span>تمريض الداخلي: الأقسام</span>
+      <div class="checks">${wardUnits().map((x) => `<label><input type="checkbox" name="nwards" value="${x.id}" ${u.role === "nurse" && (u.wardDepts || []).includes(x.id) ? "checked" : ""}> ${esc(x.name)}</label>`).join("") || `<span class="muted">ضيف أقسام الداخلي الأول.</span>`}</div></div>
+    <div class="checks nurse-only">
+      <label><input type="checkbox" name="nOps" ${u.sections?.ops === "read" && u.role === "nurse" ? "checked" : ""}> يعرض حالات العمليات</label>
+      <label><input type="checkbox" name="nVitals" ${u.nurseVitals ? "checked" : ""}> يسجّل العلامات الحيوية (في الرعاية)</label>
+      <label><input type="checkbox" name="nShared" ${u.shared && u.role === "nurse" ? "checked" : ""}> حساب مشترك (بيسأل عن اسم الممرض)</label></div>
+    <p class="hint nurse-only">التمريض بيشوف حالات وحداته وأقسامه بس، ويكتب ملاحظات التمريض، ويسجّل إعطاء الأدوية بالوقت واسم اللي أعطى. مبيقدرش يعدّل العلاج أو الجرعة أو المدة.</p>
     <div class="checks doc-only"><label><input type="checkbox" name="print" ${u.print ? "checked" : ""}> صلاحية الطباعة و PDF</label></div>
     <label class="field dept-only"><span>القسم</span><select name="deptSpecialty">${optionsHtml(S.settings.specialties || [], u.deptSpecialty || "")}</select>
       <span class="hint">المستخدم ده بيشوف حالات القسم والإشراف المشترك والعروض بتاعته بس، وبيرد على العروض ويكتب رأيه في الإشراف المشترك. ملوش دخول على أي قسم تاني.</span></label>
@@ -1863,12 +1883,16 @@ function openUserDialog(u, done) {
   const sync = () => {
     f.querySelectorAll(".doc-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "doctor"));
     f.querySelectorAll(".dept-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "dept"));
-    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk"].includes(f.role.value)));
+    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse"].includes(f.role.value)));
+    f.querySelectorAll(".nurse-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "nurse"));
     f.querySelectorAll(".clerk-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "clerk"));
-    if (f.role.value === "doctor") document.getElementById("icuUnits").classList.toggle("hidden", f.querySelector('input[name="sec_icu"]:checked').value === "none");
+    if (f.role.value === "doctor") {
+      document.getElementById("icuUnits").classList.toggle("hidden", f.querySelector('input[name="sec_icu"]:checked').value === "none");
+      document.getElementById("wardDeptsBox").classList.toggle("hidden", f.querySelector('input[name="sec_ward"]:checked').value === "none");
+    }
   };
   f.role.onchange = sync;
-  f.querySelectorAll('input[name="sec_icu"]').forEach((r) => (r.onchange = sync));
+  f.querySelectorAll('input[name="sec_icu"], input[name="sec_ward"]').forEach((r) => (r.onchange = sync));
   sync();
 
   f.onsubmit = async (ev) => {
@@ -1876,20 +1900,27 @@ function openUserDialog(u, done) {
     const err = document.getElementById("userErr");
     err.textContent = "";
     const role = self ? "admin" : f.role.value;
-    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk"].includes(role) ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
+    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse"].includes(role) ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
+    const isN = role === "nurse";
+    const nUnits = isN ? checkedValues(f, "nunits") : [], nWards = isN ? checkedValues(f, "nwards") : [];
+    if (isN) Object.assign(sections, { icu: nUnits.length ? "nurse" : "none", ward: nWards.length ? "nurse" : "none", ops: f.elements.nOps.checked ? "read" : "none", reports: "none" });
     const data = {
       displayName: f.displayName.value.trim(), role, sections,
       access: ["none", "nurse"].includes(sections.icu) ? "read" : sections.icu,
-      units: role === "admin" || sections.icu === "none" ? [] : checkedValues(f, "units"),
-      print: role === "admin" ? true : ["dept", "clerk"].includes(role) ? false : f.print.checked,
+      units: isN ? nUnits : role === "admin" || sections.icu === "none" ? [] : checkedValues(f, "units"),
+      wardDepts: isN ? nWards : role === "doctor" && sections.ward !== "none" ? checkedValues(f, "wdepts") : [],
+      nurseVitals: isN ? f.elements.nVitals.checked : false,
+      print: role === "admin" ? true : ["dept", "clerk", "nurse"].includes(role) ? false : f.print.checked,
       clerkSections: role === "clerk" ? checkedValues(f, "clerkSec") : [],
-      shared: role === "dept" ? f.elements.sharedAcc.checked : false,
+      shared: role === "dept" ? f.elements.sharedAcc.checked : isN ? f.elements.nShared.checked : false,
       specialties: role === "dept" ? [f.deptSpecialty.value].filter(Boolean) : checkedValues(f, "uspecs").slice(0, 10),
       deptSpecialty: role === "dept" ? f.deptSpecialty.value : "",
       editWindowHours: Number(f.editWindowHours.value),
     };
     if (!data.displayName) { err.textContent = "اكتب اسم المستخدم الظاهر."; return; }
     if (role === "dept" && !data.deptSpecialty) { err.textContent = "اختر القسم."; return; }
+    if (isN && !nUnits.length && !nWards.length) { err.textContent = "اختر وحدة رعاية أو قسم داخلي واحد على الأقل."; return; }
+    if (role === "doctor" && sections.ward !== "none" && wardUnits().length && !data.wardDepts.length) { err.textContent = "اختر قسم داخلي واحد على الأقل."; return; }
     if (role === "clerk" && !data.clerkSections.length) { err.textContent = "اختر الرعاية أو الداخلي (أو الاتنين)."; return; }
     if (role === "doctor" && Object.values(sections).every((x) => x === "none")) { err.textContent = "اختر قسم واحد على الأقل."; return; }
     if (role !== "admin" && sections.icu !== "none" && !data.units.length) { err.textContent = "اختر وحدة رعاية واحدة على الأقل."; return; }
@@ -2158,6 +2189,7 @@ const KIND_LABEL = { status: "الحالة السريرية", history: "التا
 function recLabel(col, old) {
   if (col === "vitals") return "قراءة علامات حيوية";
   if (col === "meds") return `علاج ${old?.name || ""}`;
+  if (col === "mar") return `إعطاء ${old?.medName || ""}`;
   return KIND_LABEL[old?.kind] || "سجل";
 }
 const oldRec = (col, id) => (S.P?.[col] || []).find((x) => x.id === id);
@@ -2317,7 +2349,7 @@ function openDischarge() {
         toWard = { dept: f.elements.wdept.value, bed: Number(f.elements.wbed.value), resp: f.elements.wresp.value };
         if (!toWard.dept || !toWard.bed) return "اختر قسم الداخلي والسرير.";
         if ((S.settings.specialties || []).length && !toWard.resp) return "اختر القسم المسؤول عن الحالة في الداخلي.";
-        info.ward = `${wardById(toWard.dept)?.name || ""}، سرير ${toWard.bed}`;
+        info.ward = wardPlace(toWard.dept, toWard.bed);
       } else if (type === "ward") { info.ward = f.elements.ward.value.trim(); if (!info.ward) return "اكتب القسم الداخلي."; }
       const lastDx = S.P.entries.filter((e) => e.kind === "diagnosis").sort(desc)[0]?.text || "";
       const dsCtx = f.elements.writeDs.checked ? await buildDischargeContext("icu") : null;
@@ -2373,9 +2405,9 @@ function openDischarge() {
   f.querySelectorAll('input[name="dtype"]').forEach((r) => (r.onchange = sync));
   sync();
   if (f.elements.wdept) bedOccupancy().then((occ) => {
-    const free = (u) => Array.from({ length: u.beds }, (_, i) => i + 1).filter((n) => !occ[u.id]?.has(n));
+    const free = (u) => wardBeds(u).filter((n) => !occ[u.id]?.has(n));
     f.elements.wdept.innerHTML = wardUnits().filter((u) => free(u).length).map((u) => `<option value="${u.id}">${esc(u.name)} (${free(u).length} فاضي)</option>`).join("");
-    const fill = () => { const u = wardById(f.elements.wdept.value); f.elements.wbed.innerHTML = u ? free(u).map((n) => `<option value="${n}">سرير ${n}</option>`).join("") : ""; };
+    const fill = () => { const u = wardById(f.elements.wdept.value); f.elements.wbed.innerHTML = u ? free(u).map((n) => `<option value="${n}">${esc(wardBedText(u.id, n))}</option>`).join("") : ""; };
     f.elements.wdept.onchange = fill; fill();
   }).catch(() => {});
 }
@@ -3212,48 +3244,13 @@ async function bedOccupancy() {
 }
 
 /* ---------- الداخلي: خريطة الأسرّة ---------- */
-function renderWard(filter) {
-  const list = wardUnits();
-  if (!list.length) {
-    shell(`<div class="empty">لسه مفيش أقسام داخلي متسجلة.${isAdmin() ? ` ضيفها من <a href="#/settings/wardunits">الإعدادات > أقسام الداخلي</a>.` : " كلّم الأدمن."}</div>`);
-    return;
-  }
-  const shown = filter ? list.filter((u) => u.id === filter) : list;
-  const active = S.wardActive || [];
-  const st = (u) => { const o = active.filter((a) => a.deptId === u.id).length; return { o, t: u.beds }; };
-  let to = 0, tt = 0; list.forEach((u) => { const s = st(u); to += s.o; tt += s.t; });
-  const w = canEdit("ward");
-  shell(`
-  <nav class="unit-bar"><a href="#/ward" class="chip ${!filter ? "on" : ""}">كل الأقسام <b>${to}/${tt}</b></a>
-    ${list.map((u) => { const s = st(u); return `<a href="#/ward/${u.id}" class="chip ${filter === u.id ? "on" : ""}">${esc(u.name)} <b>${s.o}/${s.t}</b></a>`; }).join("")}</nav>
-  ${shown.map((u) => {
-    const s = st(u), byBed = {};
-    active.filter((a) => a.deptId === u.id).forEach((a) => (byBed[a.bed] = a));
-    let tiles = "";
-    for (let n = 1; n <= u.beds; n++) {
-      const a = byBed[n];
-      if (a) tiles += `<a class="bed occ ward" href="#/w/${a.id}"><span class="bed-no">سرير ${n}</span>
-        <span class="bed-day"><b>${dayOfStay(a.admitAt)}</b><small>يوم</small></span>
-        <span class="bed-name">${esc(a.patientName)}</span><span class="bed-meta">${esc(a.consultant || "")}</span></a>`;
-      else if (w && S.wardActive) tiles += `<button class="bed free" data-dept="${u.id}" data-bed="${n}"><span class="bed-no">سرير ${n}</span><span class="bed-state">فارغ، سجّل دخول</span></button>`;
-      else tiles += `<div class="bed free"><span class="bed-no">سرير ${n}</span><span class="bed-state">${S.wardActive ? "فارغ" : "…"}</span></div>`;
-    }
-    const pct = s.t ? Math.round((s.o / s.t) * 100) : 0;
-    return `<section class="unit"><header class="unit-head"><h2><a href="#/ward/${u.id}">${esc(u.name)}</a></h2>
-      <div class="unit-stats"><span><b>${s.o}</b> مشغول</span><span class="s-free"><b>${s.t - s.o}</b> فارغ</span><span>من <b>${s.t}</b></span></div>
-      <div class="meter"><i style="width:${pct}%"></i></div></header><div class="beds">${tiles}</div></section>`;
-  }).join("")}`);
-  root.querySelectorAll("button.bed.free[data-dept]").forEach((b) => (b.onclick = () =>
-    pickPatient(`دخول داخلي: ${esc(wardById(b.dataset.dept).name)}، سرير ${b.dataset.bed}`, (p) => openWardAdmission(p, b.dataset.dept, Number(b.dataset.bed)))));
-}
-
 /* ---------- دخول داخلي ---------- */
 async function openWardAdmission(p, deptId, bed, extra = {}) {
   if (p.currentAdmissionId || p.currentWardId) { toast("المريض ده موجود حالياً في دخول تاني.", true); return; }
   let occ;
   try { occ = await bedOccupancy(); } catch (e) { toast(errText(e), true); return; }
-  const free = (u) => Array.from({ length: u.beds }, (_, i) => i + 1).filter((n) => !occ[u.id]?.has(n));
-  const opts = wardUnits().filter((u) => free(u).length || u.id === deptId);
+  const free = (u) => wardBeds(u).filter((n) => !occ[u.id]?.has(n));
+  const opts = admitWardUnits().filter((u) => free(u).length || u.id === deptId);
   if (!opts.length) { toast("مفيش أسرّة فاضية في الداخلي.", true); return; }
   const s = S.settings;
   const f = formDialog(`دخول داخلي: ${esc(p.name)}`, `
@@ -3285,7 +3282,7 @@ async function openWardAdmission(p, deptId, bed, extra = {}) {
       toast("تم تسجيل الدخول");
       location.hash = isClerk() ? "#/" : `#/w/${id}`;
     });
-  const fill = () => { const u = wardById(f.elements.dept.value); f.elements.bed.innerHTML = free(u).map((n) => `<option value="${n}" ${n === bed ? "selected" : ""}>سرير ${n}</option>`).join(""); };
+  const fill = () => { const u = wardById(f.elements.dept.value); f.elements.bed.innerHTML = free(u).map((n) => `<option value="${n}" ${n === bed ? "selected" : ""}>${esc(wardBedText(u.id, n))}</option>`).join(""); };
   f.elements.dept.onchange = fill; fill();
 }
 
@@ -3373,32 +3370,28 @@ function bindMedlog(container, colPath) {
       toast("تمت إضافة الدواء");
     } catch (e) { toast(errText(e), true); }
   };
-  container.querySelectorAll("[data-given]").forEach((b) => (b.onclick = async () => {
-    try {
-      await updateDoc(doc(db, ...colPath, "medlog", b.dataset.given), { given: true, givenAt: Timestamp.now(), givenBy: S.profile.uid, givenByName: S.profile.displayName });
-    } catch (e) { toast(errText(e), true); }
-  }));
+  container.querySelectorAll("[data-given]").forEach((b) => (b.onclick = () => openGiveDialog(colPath, b.dataset.given)));
 }
 
 function drawWardAdmission() {
   const { a, meds } = S.W;
   const u = wardById(a.deptId) || { name: a.deptId };
   const active = a.status === "active";
-  const canW = canEdit("ward") && (active || isAdmin());
+  const canW = canWriteWardDept(a.deptId) && (active || isAdmin());
   const txt = (v) => (v ? `<div class="pre-wrap ltr-auto">${esc(v)}</div>` : `<span class="muted">—</span>`);
   shell(`
   <div class="file-head">
     <a class="back" href="${isDept() ? "#/" : `#/ward/${a.deptId}`}">${isDept() ? `قسم ${esc(S.profile.deptSpecialty)}` : esc(u.name)}</a>
-    <h1>${isDept() ? esc(a.patientName) : `<a href="#/p/${a.patientId}" class="plain">${esc(a.patientName)}</a>`}</h1>
+    <h1>${isDept() || isNurseRole() ? esc(a.patientName) : `<a href="#/p/${a.patientId}" class="plain">${esc(a.patientName)}</a>`}</h1>
     <div class="tags">
       ${a.medicalId ? `<span class="tag mr">${esc(a.medicalId)}</span>` : ""}
-      <span class="tag">${esc(u.name)}، سرير ${a.bed}</span>
+      <span class="tag">${esc(u.name)}، ${esc(wardBedText(a.deptId, a.bed))}</span>
       ${active ? `<span class="tag day">اليوم ${stayDays(a)} للإقامة</span>` : `<span class="tag archived">خرج: ${WARD_DIS[a.dischargeType] || ""}</span>`}
       ${a.source === "icu" ? `<a class="tag" href="#/patient/${a.sourceId}">محوّل من الرعاية</a>` : ""}
     </div>
     <div class="file-actions">
       ${canW ? `<button class="btn ghost" data-w="edit">تعديل</button>` : ""}
-      ${active && canEdit("ward") ? `<button class="btn ghost" data-w="transfer">نقل</button><button class="btn danger" data-w="discharge">خروج</button>` : ""}
+      ${active && canWriteWardDept(a.deptId) ? `<button class="btn ghost" data-w="transfer">نقل</button><button class="btn danger" data-w="discharge">خروج</button>` : ""}
       ${canEditAny() ? `<button class="btn ghost" data-w="band">بطاقة تعريف</button>` : ""}
       ${canPrint() ? `<button class="btn ghost" data-w="print">طباعة / PDF</button>` : ""}
       ${canEdit("reports") ? `<button class="btn ghost" data-w="report">تقرير طبي</button>` : ""}
@@ -3431,10 +3424,10 @@ function drawWardAdmission() {
       <dl class="kv"><dt>التشخيص</dt><dd>${txt(a.diagnosis)}</dd><dt>التاريخ المرضي</dt><dd>${txt(a.history)}</dd></dl></section>` : ""}
   <section class="panel stack-gap"><header><h2>الطلبات</h2></header>
     <dl class="kv"><dt>أشعات مطلوبة</dt><dd>${txt(a.xrays)}</dd><dt>تحاليل مطلوبة</dt><dd>${txt(a.labs)}</dd><dt>عروض مطلوبة</dt><dd>${txt(a.requests)}</dd></dl></section>
-  <section class="panel stack-gap" id="wMeds"><header><h2>سجل الأدوية</h2></header>${medlogHtml(meds, canW && active, active && (canEdit("ward") || isNurse("ward")))}</section>
-  ${wardOpinionsHtml(S.W.ops || [], active && (canEdit("ward") || deptCanOpinion(a)))}
-  ${wardNotesHtml(S.W.notes || [], active && (canEdit("ward") || isNurse("ward")))}
-  <section class="panel stack-gap" id="wCreqs"><header><h2>طلبات الاستشارة</h2>${active && canEdit("ward") ? `<button class="btn ghost sm" data-w="consultReq">طلب استشارة</button>` : ""}</header>
+  <section class="panel stack-gap" id="wMeds"><header><h2>سجل الأدوية</h2></header>${medlogHtml(meds, canW && active, active && canNurseWardDept(a.deptId))}</section>
+  ${wardOpinionsHtml(S.W.ops || [], active && (canWriteWardDept(a.deptId) || deptCanOpinion(a)))}
+  ${wardNotesHtml(S.W.notes || [], active && canNurseWardDept(a.deptId))}
+  <section class="panel stack-gap" id="wCreqs"><header><h2>طلبات الاستشارة</h2>${active && canWriteWardDept(a.deptId) ? `<button class="btn ghost sm" data-w="consultReq">طلب استشارة</button>` : ""}</header>
     ${consultListHtml(S.W.creqs || [], true)}</section>
   ${wardMovesHtml(a)}
   ${S.W.p?.visits?.length ? `<section class="panel stack-gap">${visitsListHtml(S.W.p, a.id)}</section>` : ""}`);
@@ -3445,7 +3438,7 @@ function drawWardAdmission() {
     const b = ev.target.closest("[data-w],[data-act]"); if (!b) return;
     if (b.dataset.act === "finChange") return openFinanceChange(a, "wardAdmissions");
     if (b.dataset.act === "finDel") return deleteFinance(b.dataset.from, a, "wardAdmissions");
-    ({ edit: () => openWardEdit(a), discharge: () => openWardDischarge(a), band: () => printWristbandFor({ ...a, name: a.patientName }, `${u.name}، سرير ${a.bed}`), print: () => printWard(a, meds),
+    ({ edit: () => openWardEdit(a), discharge: () => openWardDischarge(a), band: () => printWristbandFor({ ...a, name: a.patientName }, wardPlace(a.deptId, a.bed)), print: () => printWard(a, meds),
       report: () => openReportForm({ type: "ward", adm: a }), del: () => deleteWardAdmission(a, meds), transfer: () => openWardTransfer(a), dsum: () => dischargeSummaryAction("ward"), consultReq: () => openConsultRequest("ward", a), opAdd: () => openWardOpinion(a) })[b.dataset.w]?.();
   };
 }
@@ -3527,7 +3520,7 @@ function printWard(a, meds) {
   const row = (l, v) => (v ? `<dt>${l}</dt><dd class="pre ltr">${esc(v)}</dd>` : "");
   printDoc(`${a.patientName}`, `
     <h1>${esc(a.patientName)}</h1>
-    <p class="sub">${esc(a.medicalId || "")}، دخول ${esc(a.admissionNumber || "")}، ${esc(u.name)} سرير ${a.bed}، ${fmtDateTime(a.admitAt)}، ${stayDays(a)} يوم إقامة
+    <p class="sub">${esc(a.medicalId || "")}، دخول ${esc(a.admissionNumber || "")}، ${esc(u.name)} ${esc(wardBedText(a.deptId, a.bed))}، ${fmtDateTime(a.admitAt)}، ${stayDays(a)} يوم إقامة
       ${a.status === "discharged" ? `، خرج ${fmtDateTime(a.dischargeAt)} (${WARD_DIS[a.dischargeType] || ""})` : ""}</p>
     <h2>بيانات الدخول</h2><dl class="kv">${row("استشاري الحالة", a.consultant)}${row("الإشراف المشترك", (a.specialties || []).join("، "))}
       ${row("المعاملة المالية", finText(finBreakdown(a)))}${row("التشخيص", a.diagnosis)}${row("التاريخ المرضي", a.history)}
@@ -3753,49 +3746,24 @@ function refreshBell() {
 }
 
 // اشتراكات الداخلي والعمليات
-let wardUnsub = null, opsUnsub = null;
+let wardUnsubs = [], opsUnsub = null;
+const wardKeyNow = () => (canSee("ward") ? visibleWardUnits().map((u) => u.id).join(",") : "");
 function subscribeSections() {
-  wardUnsub?.(); opsUnsub?.(); wardUnsub = opsUnsub = null;
-  S.wardActive = null; S.opsUpcoming = [];
-  if (canSee("ward")) wardUnsub = onSnapshot(query(collection(db, "wardAdmissions"), where("status", "==", "active")), (s) => {
-    S.wardActive = s.docs.map((d) => ({ id: d.id, ...d.data() }));
-    liveRefresh();
-  }, (e) => console.error("ward", e));
-  if (canSee("ops")) opsUnsub = onSnapshot(query(collection(db, "operations"), where("status", "==", "scheduled")), (s) => {
-    S.opsUpcoming = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+  wardUnsubs.forEach((u) => u()); wardUnsubs = []; opsUnsub?.(); opsUnsub = null;
+  S.wardActive = null; S.opsUpcoming = []; S.wardKey = wardKeyNow();
+  if (canSee("ward")) {
+    const list = visibleWardUnits();
+    S.wardByUnit = {};
+    if (!list.length) S.wardActive = [];
+    const done = () => { if (Object.keys(S.wardByUnit).length === list.length) { S.wardActive = Object.values(S.wardByUnit).flat(); liveRefresh(); } };
+    list.forEach((u) => wardUnsubs.push(onSnapshot(query(collection(db, "wardAdmissions"), where("deptId", "==", u.id), where("status", "==", "active")),
+      (sn) => { S.wardByUnit[u.id] = sn.docs.map((d) => ({ id: d.id, ...d.data() })); done(); },
+      (e) => { console.error("ward", u.id, e); S.wardByUnit[u.id] = []; done(); })));
+  }
+  if (canSee("ops")) opsUnsub = onSnapshot(query(collection(db, "operations"), where("status", "==", "scheduled")), (sn) => {
+    S.opsUpcoming = sn.docs.map((d) => ({ id: d.id, ...d.data() }));
     liveRefresh();
   }, (e) => console.error("ops", e));
-}
-
-/* ---------- الإعدادات: أقسام الداخلي ---------- */
-function tabWardUnits(body) {
-  let rows = wardUnits().map((u) => ({ ...u }));
-  const occ = (id) => (S.wardActive || []).filter((a) => a.deptId === id);
-  const draw = () => {
-    body.innerHTML = `
-    <div class="toolbar"><h2>أقسام الداخلي</h2><button class="btn ghost" id="addW">إضافة قسم</button></div>
-    <div class="table-wrap"><table class="units-edit"><thead><tr><th>اسم القسم</th><th>عدد الأسرّة</th><th>مشغول حالياً</th><th></th></tr></thead>
-      <tbody>${rows.map((u, i) => `<tr><td><input data-i="${i}" data-k="name" value="${esc(u.name)}"></td>
-        <td><input data-i="${i}" data-k="beds" type="number" min="1" max="300" value="${u.beds}"></td><td>${occ(u.id).length}</td>
-        <td>${occ(u.id).length ? "" : `<button class="btn ghost sm" data-del="${i}">حذف</button>`}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">لا يوجد أقسام. اضغط "إضافة قسم".</td></tr>`}</tbody></table></div>
-    <div class="err" id="wuErr" style="margin-top:12px"></div>
-    <div class="actions" style="margin-top:12px"><button class="btn" id="saveW">حفظ الأقسام</button></div>`;
-    body.querySelectorAll("[data-k]").forEach((el) => (el.oninput = () => (rows[el.dataset.i][el.dataset.k] = el.type === "number" ? Number(el.value) : el.value)));
-    body.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { rows.splice(+b.dataset.del, 1); draw(); }));
-    document.getElementById("addW").onclick = () => { rows.push({ id: "w" + Date.now().toString(36), name: "", beds: 10 }); draw(); };
-    document.getElementById("saveW").onclick = async () => {
-      const err = document.getElementById("wuErr");
-      for (const u of rows) {
-        u.name = String(u.name || "").trim();
-        if (!u.name) { err.textContent = "كل قسم لازم يكون ليه اسم."; return; }
-        if (!Number.isInteger(u.beds) || u.beds < 1) { err.textContent = `عدد الأسرّة في "${u.name}" غير صحيح.`; return; }
-        const mx = Math.max(0, ...occ(u.id).map((a) => a.bed));
-        if (u.beds < mx) { err.textContent = `مينفعش تقلل أسرّة "${u.name}" لأقل من ${mx}.`; return; }
-      }
-      try { await updateDoc(doc(db, "config", "settings"), { wardUnits: rows }); toast("تم حفظ الأقسام"); } catch (e) { err.textContent = errText(e); }
-    };
-  };
-  draw();
 }
 
 /* =========================================================
@@ -4150,6 +4118,7 @@ function liveRefresh() {
   else if (S.page === "ward") renderWard(S.wardFilter);
   else if (S.page === "home") renderHome();
   else if (S.page === "board") renderBoard();
+  else if (S.page === "nurse") drawNurseHome();
   else refreshBell();
 }
 
@@ -4179,9 +4148,9 @@ function renderHome() {
     kpis.push([all.filter((a) => a.clinical?.resp === "vent").length, "على جهاز تنفس"],
       [all.filter((a) => isoDay(toDate(a.admitAt)) === today).length, "دخول رعاية النهارده"]);
   }
-  if (canSee("ward") && wardUnits().length) {
+  if (canSee("ward") && visibleWardUnits().length) {
     const act = S.wardActive || [];
-    cards += occCard("الداخلي", "#/ward", wardUnits().map((u) => ({ name: u.name, href: `#/ward/${u.id}`, occ: act.filter((a) => a.deptId === u.id).length, total: u.beds })));
+    cards += occCard("الداخلي", "#/ward", visibleWardUnits().map((u) => ({ name: u.name, href: `#/ward/${u.id}`, occ: act.filter((a) => a.deptId === u.id).length, total: wardBeds(u).length })));
     kpis.push([act.filter((a) => isoDay(toDate(a.admitAt)) === today).length, "دخول داخلي النهارده"]);
   }
   let opsHtml = "";
@@ -4301,11 +4270,11 @@ function renderOpsArchive() {
 async function openWardTransfer(a) {
   let occ;
   try { occ = await bedOccupancy(); } catch (e) { toast(errText(e), true); return; }
-  const free = (u) => Array.from({ length: u.beds }, (_, i) => i + 1).filter((n) => !occ[u.id]?.has(n));
+  const free = (u) => wardBeds(u).filter((n) => !occ[u.id]?.has(n));
   const opts = wardUnits().filter((u) => free(u).length);
   if (!opts.length) { toast("مفيش أسرّة فاضية في الداخلي.", true); return; }
   const f = formDialog(`نقل: ${esc(a.patientName)}`, `
-    <p class="muted" style="margin:0">حالياً في ${esc(wardById(a.deptId)?.name || "")}، سرير ${a.bed}</p>
+    <p class="muted" style="margin:0">حالياً في ${esc(wardPlace(a.deptId, a.bed))}</p>
     <div class="row2">
       <label class="field"><span>القسم</span><select name="dept">${opts.map((u) => `<option value="${u.id}" ${u.id === a.deptId ? "selected" : ""}>${esc(u.name)} (${free(u).length} فاضي)</option>`).join("")}</select></label>
       <label class="field"><span>السرير</span><select name="bed"></select></label>
@@ -4329,17 +4298,17 @@ async function openWardTransfer(a) {
           moves: arrayUnion({ fromUnit: cur.deptId, fromBed: cur.bed, toUnit: toDept, toBed, at: Timestamp.fromDate(at), byName: S.profile.displayName, reason: f.elements.reason.value.trim() }) });
       });
       audit("نقل داخلي", { adm: { id: a.id, patientName: a.patientName, unitId: toDept }, details: { from: `${wardById(a.deptId)?.name} ${a.bed}`, to: `${wardById(toDept)?.name} ${toBed}` } });
-      toast(`تم النقل إلى ${wardById(toDept)?.name}، سرير ${toBed}`);
+      toast(`تم النقل إلى ${wardPlace(toDept, toBed)}`);
     });
-  const fill = () => { const u = wardById(f.elements.dept.value); f.elements.bed.innerHTML = free(u).map((n) => `<option value="${n}">سرير ${n}</option>`).join(""); };
+  const fill = () => { const u = wardById(f.elements.dept.value); f.elements.bed.innerHTML = free(u).map((n) => `<option value="${n}">${esc(wardBedText(u.id, n))}</option>`).join(""); };
   f.elements.dept.onchange = fill; fill();
 }
 
 function wardMovesHtml(a) {
   if (!a.moves?.length) return "";
   return `<section class="panel stack-gap"><header><h2>سجل النقل</h2></header><ul class="entries">${[...a.moves].sort((x, y) => toDate(x.at) - toDate(y.at)).map((m) => `
-    <li><div class="entry-head"><strong>${esc(wardById(m.fromUnit)?.name || m.fromUnit)}، سرير ${m.fromBed}</strong><span aria-hidden="true">←</span>
-      <strong>${esc(wardById(m.toUnit)?.name || m.toUnit)}، سرير ${m.toBed}</strong><span class="by-line">${fmtDateTime(m.at)}، ${esc(m.byName)}</span></div>
+    <li><div class="entry-head"><strong>${esc(wardPlace(m.fromUnit, m.fromBed))}</strong><span aria-hidden="true">←</span>
+      <strong>${esc(wardPlace(m.toUnit, m.toBed))}</strong><span class="by-line">${fmtDateTime(m.at)}، ${esc(m.byName)}</span></div>
       ${m.reason ? `<p>${esc(m.reason)}</p>` : ""}</li>`).join("")}</ul></section>`;
 }
 
@@ -4433,7 +4402,7 @@ function openDischargeSummary(ctx, existing, onDone) {
         return;
       }
       const p = ctx.pat || {};
-      const place = ctx.type === "icu" ? `${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}` : `${wardById(a.deptId)?.name || ""}، سرير ${a.bed}`;
+      const place = ctx.type === "icu" ? `${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}` : wardPlace(a.deptId, a.bed);
       const disAt = toDate(dis.at) || new Date();
       const id = dsId(ctx.type, a.id);
       await setDoc(doc(db, "dischargeReports", id), {
@@ -4781,7 +4750,7 @@ async function healVisits(p, icu, ward) {
 function admitChoice(p) {
   if (p.currentAdmissionId || p.currentWardId) { toast("المريض ده موجود حالياً في دخول، ولازم يخرج الأول.", true); return; }
   const icu = clerkCan("icu") || (canEdit("icu") && visibleUnits().some((u) => canWriteUnit(u.id)));
-  const ward = (clerkCan("ward") || canEdit("ward")) && wardUnits().length > 0;
+  const ward = admitWardUnits().length > 0;
   if (icu && !ward) return chooseIcuBed(p);
   if (ward && !icu) return openWardAdmission(p);
   const again = (p.visits || []).length || p.admissionsCount || p.wardCount;
@@ -4808,6 +4777,9 @@ function pCanNurse() {
   if (a.status !== "active") return false;
   return canWriteUnit(a.unitId) || (isNurse("icu") && (S.profile.units || []).includes(a.unitId));
 }
+const nurseVitalsOk = () => isAdmin() || !isNurseRole() || !!S.profile.nurseVitals;
+function pCanVitals() { return pCanNurse() && (isAdmin() || canWriteUnit(S.P.adm.unitId) || nurseVitalsOk()); }
+function pCanEditV(t) { return pCanVitals() && (isAdmin() || (toDate(t) && toDate(t) >= earliestEditable())); }
 function pCanEditN(t) {
   if (!pCanNurse()) return false;
   if (isAdmin()) return true;
@@ -4868,7 +4840,7 @@ const CONSULT_STATUS = { pending: "منتظر", answered: "تم الرد", cance
 const mySpecs = () => S.profile?.specialties || [];
 
 function openConsultRequest(source, a) {
-  const place = source === "icu" ? `${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}` : `${wardById(a.deptId)?.name || ""}، سرير ${a.bed}`;
+  const place = source === "icu" ? `${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}` : wardPlace(a.deptId, a.bed);
   formDialog(`طلب استشارة: ${esc(a.patientName)}`, `
     <div class="row2">
       <label class="field"><span>التخصص المطلوب</span><select name="specialty">${optionsHtml(S.settings.specialties || [], "")}</select></label>
@@ -4968,7 +4940,7 @@ function subscribeConsults() {
   const col = collection(db, "consults");
   if (mySpecs().length) consultUnsubs.push(onSnapshot(query(col, where("status", "==", "pending"), isDept() ? where("specialty", "==", S.profile.deptSpecialty) : where("specialty", "in", mySpecs().slice(0, 10))),
     (s) => { S.consultIn = s.docs.map((d) => ({ id: d.id, ...d.data() })); liveRefresh(); }, () => {}));
-  if (!isDept() && !isClerk()) consultUnsubs.push(onSnapshot(query(col, where("fromUid", "==", S.profile.uid), where("seenByRequester", "==", false)),
+  if (!isDept() && !isClerk() && !isNurseRole()) consultUnsubs.push(onSnapshot(query(col, where("fromUid", "==", S.profile.uid), where("seenByRequester", "==", false)),
     (s) => { S.consultAnswered = s.docs.map((d) => ({ id: d.id, ...d.data() })); liveRefresh(); }, () => {}));
 }
 
@@ -4977,7 +4949,7 @@ const shiftKey = (d = new Date()) => { const s = shiftStart(d); return `${isoDay
 function handoverOptions() {
   const o = [];
   visibleUnits().forEach((u) => o.push({ key: `icu:${u.id}`, name: u.name, type: "icu", id: u.id }));
-  if (canSee("ward")) wardUnits().forEach((u) => o.push({ key: `ward:${u.id}`, name: u.name, type: "ward", id: u.id }));
+  if (canSee("ward")) visibleWardUnits().forEach((u) => o.push({ key: `ward:${u.id}`, name: u.name, type: "ward", id: u.id }));
   return o;
 }
 async function renderHandover(key) {
@@ -4993,7 +4965,7 @@ async function renderHandover(key) {
   const body = document.getElementById("hoBody");
   const list = sel.type === "icu" ? [...(S.adm[sel.id] || [])] : (S.wardActive || []).filter((a) => a.deptId === sel.id);
   list.sort((x, y) => x.bed - y.bed);
-  const canNote = isAdmin() || (sel.type === "icu" ? canWriteUnit(sel.id) || isNurse("icu") : canEdit("ward") || isNurse("ward"));
+  const canNote = isAdmin() || (sel.type === "icu" ? canWriteUnit(sel.id) || isNurse("icu") : canNurseWardDept(sel.id));
   let rows;
   try {
     rows = await Promise.all(list.map(async (a) => {
@@ -5072,14 +5044,15 @@ function renderBoard() {
     ? `<div class="bt occ ${cls}"><span class="bn">${n}</span><span class="bd">${dayOfStay(a.admitAt)}</span>
         <span class="bp">${esc(names ? a.patientName : init(a.patientName))}</span>${a.clinical?.resp === "vent" ? `<span class="bv">فنت</span>` : ""}</div>`
     : `<div class="bt free"><span class="bn">${n}</span></div>`;
-  const group = (title, beds, byBed, cls) => {
-    let t = ""; for (let n = 1; n <= beds; n++) t += tile(byBed[n], n, cls);
+  const group = (title, bedList, byBed, cls) => {
+    const beds = bedList.length;
+    let t = ""; for (const n of bedList) t += tile(byBed[n], n, cls);
     const occ = Object.keys(byBed).length;
     return `<section class="bg"><header><h2>${esc(title)}</h2><span><b>${occ}</b>/${beds} <em>${beds - occ} فاضي</em></span></header><div class="bgrid">${t}</div></section>`;
   };
   let html = "";
-  visibleUnits().forEach((u) => { const m = {}; (S.adm[u.id] || []).forEach((a) => (m[a.bed] = a)); html += group(u.name, u.beds, m, "icu"); });
-  if (canSee("ward")) wardUnits().forEach((u) => { const m = {}; (S.wardActive || []).filter((a) => a.deptId === u.id).forEach((a) => (m[a.bed] = a)); html += group(u.name, u.beds, m, "ward"); });
+  visibleUnits().forEach((u) => { const m = {}; (S.adm[u.id] || []).forEach((a) => (m[a.bed] = a)); html += group(u.name, Array.from({ length: u.beds }, (_, i) => i + 1), m, "icu"); });
+  if (canSee("ward")) visibleWardUnits().forEach((u) => { const m = {}; (S.wardActive || []).filter((a) => a.deptId === u.id).forEach((a) => (m[a.bed] = a)); html += group(u.name, wardBeds(u), m, "ward"); });
   root.innerHTML = `<div class="board">
     <header class="board-top"><strong>${esc(S.settings.hospitalName)}</strong><span id="bClock">${fmtDateTime(new Date())}</span>
       <span class="board-acts"><button id="bNames">${names ? "إخفاء الأسماء" : "إظهار الأسماء"}</button><button id="bFull">ملء الشاشة</button><a href="#/">خروج</a></span></header>
@@ -5121,7 +5094,7 @@ async function revokeConsultAccess(c) {
 
 // اسم الطبيب: الحساب الشخصي بياخد اسمه، والمشترك بيسأل عن الاسم
 function applyDeptDoctor() {
-  if (!isDept()) return;
+  if (!isDept() && !isNurseRole()) return;
   S.profile.baseName = S.profile.displayName;
   if (!S.profile.shared) { S.profile.doctorName = S.profile.displayName; return; }
   const d = sessionStorage.getItem("deptDoctor_" + S.profile.uid) || "";
@@ -5130,10 +5103,10 @@ function applyDeptDoctor() {
   if (!d) setTimeout(askDeptDoctor, 0);
 }
 function askDeptDoctor() {
-  if (!isDept() || !S.profile.shared || dlg.open) return;
+  if ((!isDept() && !isNurseRole()) || !S.profile.shared || dlg.open) return;
   openDialog(`<form class="form" id="ddF"><header class="dlg-head"><h3>مين بيستخدم الحساب؟</h3>
-      <p>ده حساب مشترك لقسم ${esc(S.profile.deptSpecialty)}. اكتب اسمك عشان يتسجل مع أي حاجة تكتبها.</p></header>
-    <label class="field"><span>اسم الطبيب</span><input name="doc" required autofocus placeholder="د. …" value="${esc(S.profile.doctorName || "")}"></label>
+      <p>${isNurseRole() ? "ده حساب تمريض مشترك" : `ده حساب مشترك لقسم ${esc(S.profile.deptSpecialty)}`}. اكتب اسمك عشان يتسجل مع أي حاجة تكتبها.</p></header>
+    <label class="field"><span>الاسم</span><input name="doc" required autofocus placeholder="د. …" value="${esc(S.profile.doctorName || "")}"></label>
     <div class="err" id="ddErr"></div><div class="actions"><button class="btn">متابعة</button></div></form>`);
   dlg.oncancel = (e) => { if (!S.profile.doctorName) e.preventDefault(); };
   document.getElementById("ddF").onsubmit = (ev) => {
@@ -5197,7 +5170,7 @@ function drawDeptHome() {
   const avg = ownWard.length ? Math.round((ownWard.reduce((s, a) => s + stayDays(a), 0) / ownWard.length) * 10) / 10 : 0;
   const row = (a, showOwner) => `<tr>
     <td><a href="${a._t === "icu" ? `#/patient/${a.id}` : `#/w/${a.id}`}"><strong>${esc(a.patientName)}</strong></a><div class="by-line ltr">${esc(a.medicalId || "")}</div></td>
-    <td>${a._t === "icu" ? `رعاية: ${esc(unitName(a.unitId))}، ${esc(bedName(a.unitId, a.bed))}` : `${esc(wardById(a.deptId)?.name || "")}، سرير ${a.bed}`}</td>
+    <td>${a._t === "icu" ? `رعاية: ${esc(unitName(a.unitId))}، ${esc(bedName(a.unitId, a.bed))}` : esc(wardPlace(a.deptId, a.bed))}</td>
     <td>${esc(ageText(a.birthDate, a.birthDateEstimated))}</td>
     <td class="${stayDays(a) > 7 ? "wait" : ""}"><strong>${stayDays(a)}</strong> يوم</td><td>${esc(a.consultant || "")}</td>
     ${showOwner ? `<td>${esc(ownerOf(a) || "—")}</td>` : ""}
@@ -5324,7 +5297,7 @@ function renderClerkHome() {
 function drawClerkHome() {
   const C = S.C;
   const rows = [...C.icu, ...C.ward].sort((x, y) => toDate(y.admitAt) - toDate(x.admitAt));
-  const place = (a) => (a._t === "icu" ? `رعاية: ${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}` : `داخلي: ${wardById(a.deptId)?.name || ""}، سرير ${a.bed}`);
+  const place = (a) => (a._t === "icu" ? `رعاية: ${unitName(a.unitId)}، ${bedName(a.unitId, a.bed)}` : `داخلي: ${wardPlace(a.deptId, a.bed)}`);
   shell(`
   <div class="home-top">
     <form class="home-search" id="cSearch"><input name="q" placeholder="ابحث عن مريض (الرقم الطبي، أو الرقم القومي، أو التليفون، أو الاسم) لتسجيل دخول متكرر" autocomplete="off"><button class="btn">بحث</button></form>
@@ -5379,4 +5352,292 @@ function openClerkEdit(a) {
         before: { consultant: a.consultant || "", responsible: a.responsible || "", specialties: a.specialties || [], admitAt: a.admitAt } });
       toast("تم حفظ التعديل");
     });
+}
+
+/* =========================================================
+   غرف الداخلي، قسم الداخلي لكل مستخدم، والتمريض
+   ========================================================= */
+const DEFAULT_ROOM_TYPES = [
+  { id: "single", name: "غرفة سنجل", capacity: 1, color: "#2F5E86" },
+  { id: "double", name: "غرفة دوبل", capacity: 2, color: "#7A4E9B" },
+  { id: "triple", name: "غرفة تربل", capacity: 3, color: "#B5651D" },
+];
+const roomTypes = () => (S.settings?.roomTypes?.length ? S.settings.roomTypes : DEFAULT_ROOM_TYPES);
+const roomTypeOf = (r) => roomTypes().find((t) => t.id === r.typeId) || { id: r.typeId, name: "غرفة", capacity: r.beds.length, color: "#56706A" };
+// أرقام أسرّة القسم: من الغرف لو معرّفة، وإلا من 1 لعدد الأسرّة (الأقسام القديمة)
+const wardBeds = (u) => (u?.rooms ? u.rooms.flatMap((r) => r.beds).sort((a, b) => a - b) : Array.from({ length: u?.beds || 0 }, (_, i) => i + 1));
+const wardRoomOf = (u, bed) => u?.rooms?.find((r) => r.beds.includes(bed));
+function wardBedText(deptId, bed) {
+  const r = wardRoomOf(wardById(deptId), bed);
+  return r ? `${r.name}، سرير ${r.beds.indexOf(bed) + 1}` : `سرير ${bed}`;
+}
+const wardPlace = (deptId, bed) => `${wardById(deptId)?.name || ""}، ${wardBedText(deptId, bed)}`;
+function textOn(hex) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length !== 6) return "#fff";
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.substr(i, 2), 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b > 170 ? "#13302C" : "#fff";
+}
+
+/* ---------- قسم الداخلي لكل مستخدم ---------- */
+const isNurseRole = () => S.profile?.role === "nurse";
+const wardDeptOk = (id) => isAdmin() || !Array.isArray(S.profile?.wardDepts) || S.profile.wardDepts.includes(id);
+const visibleWardUnits = () => (isAdmin() ? wardUnits() : canSee("ward") ? wardUnits().filter((u) => wardDeptOk(u.id)) : []);
+const canWriteWardDept = (id) => isAdmin() || (canEdit("ward") && wardDeptOk(id));
+const canNurseWardDept = (id) => canWriteWardDept(id) || (isNurse("ward") && wardDeptOk(id));
+const admitWardUnits = () => (isClerk() ? wardUnits() : visibleWardUnits().filter((u) => canWriteWardDept(u.id)));
+
+/* ---------- خريطة أسرّة الداخلي (بالغرف) ---------- */
+function wardUnitHtml(u, active, opts = {}) {
+  const byBed = {};
+  active.filter((a) => a.deptId === u.id).forEach((a) => (byBed[a.bed] = a));
+  const w = opts.canAdmit ?? canWriteWardDept(u.id);
+  const tile = (n, color) => {
+    const a = byBed[n];
+    const label = wardBedText(u.id, n);
+    const st = color ? `style="--rc:${color};--rt:${textOn(color)}"` : "";
+    if (a) return `<a class="bed occ ward" ${st} href="#/w/${a.id}"><span class="bed-no">${esc(color ? `سرير ${wardRoomOf(u, n).beds.indexOf(n) + 1}` : label)}</span>
+      <span class="bed-day"><b>${dayOfStay(a.admitAt)}</b><small>يوم</small></span>
+      <span class="bed-name">${esc(a.patientName)}</span>${opts.extra ? opts.extra(a) : `<span class="bed-meta">${esc(a.consultant || "")}</span>`}</a>`;
+    const nm = color ? `سرير ${wardRoomOf(u, n).beds.indexOf(n) + 1}` : label;
+    if (w && S.wardActive) return `<button class="bed free" ${st} data-dept="${u.id}" data-bed="${n}"><span class="bed-no">${esc(nm)}</span><span class="bed-state">فارغ، سجّل دخول</span></button>`;
+    return `<div class="bed free" ${st}><span class="bed-no">${esc(nm)}</span><span class="bed-state">${S.wardActive ? "فارغ" : "…"}</span></div>`;
+  };
+  if (u.rooms) {
+    return `<div class="rooms">${u.rooms.map((r) => {
+      const t = roomTypeOf(r);
+      return `<div class="room" style="--rc:${t.color};--rt:${textOn(t.color)}"><div class="room-head"><strong>${esc(r.name)}</strong><span>${esc(t.name)}</span></div>
+        <div class="room-beds">${r.beds.map((n) => tile(n, t.color)).join("")}</div></div>`;
+    }).join("") || `<p class="muted">لسه مفيش غرف في القسم ده.</p>`}</div>`;
+  }
+  return `<div class="beds">${wardBeds(u).map((n) => tile(n, "")).join("")}</div>`;
+}
+
+function renderWard(filter) {
+  const list = visibleWardUnits();
+  if (!list.length) {
+    shell(`<div class="empty">${isAdmin() ? `لسه مفيش أقسام داخلي. ضيفها من <a href="#/settings/wardunits">الإعدادات > أقسام الداخلي</a>.` : "مفيش قسم داخلي متحدد لحسابك. كلّم الأدمن."}</div>`);
+    return;
+  }
+  const shown = filter ? list.filter((u) => u.id === filter) : list;
+  const active = S.wardActive || [];
+  const st = (u) => { const o = active.filter((a) => a.deptId === u.id).length; return { o, t: wardBeds(u).length }; };
+  let to = 0, tt = 0; list.forEach((u) => { const s = st(u); to += s.o; tt += s.t; });
+  shell(`
+  <nav class="unit-bar"><a href="#/ward" class="chip ${!filter ? "on" : ""}">كل الأقسام <b>${to}/${tt}</b></a>
+    ${list.map((u) => { const s = st(u); return `<a href="#/ward/${u.id}" class="chip ${filter === u.id ? "on" : ""}">${esc(u.name)} <b>${s.o}/${s.t}</b></a>`; }).join("")}</nav>
+  ${shown.map((u) => {
+    const s = st(u), pct = s.t ? Math.round((s.o / s.t) * 100) : 0;
+    return `<section class="unit"><header class="unit-head"><h2><a href="#/ward/${u.id}">${esc(u.name)}</a></h2>
+      <div class="unit-stats"><span><b>${s.o}</b> مشغول</span><span class="s-free"><b>${s.t - s.o}</b> فارغ</span><span>من <b>${s.t}</b></span></div>
+      <div class="meter"><i style="width:${pct}%"></i></div></header>${wardUnitHtml(u, active)}</section>`;
+  }).join("")}`);
+  root.querySelectorAll("button.bed.free[data-dept]").forEach((b) => (b.onclick = () =>
+    pickPatient(`دخول داخلي: ${esc(wardPlace(b.dataset.dept, Number(b.dataset.bed)))}`, (p) => openWardAdmission(p, b.dataset.dept, Number(b.dataset.bed)))));
+}
+
+/* ---------- الإعدادات: أنواع الغرف وأقسام الداخلي ---------- */
+function tabWardUnits(body) {
+  let rows = JSON.parse(JSON.stringify(wardUnits()));
+  let types = JSON.parse(JSON.stringify(roomTypes()));
+  const occ = (id) => (S.wardActive || []).filter((a) => a.deptId === id);
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const ensureRooms = (u) => {
+    if (u.rooms) return;
+    u.rooms = Array.from({ length: u.beds || 0 }, (_, k) => ({ id: "r" + (k + 1), name: `غرفة ${k + 1}`, typeId: types[0]?.id || "single", beds: [k + 1] }));
+    u.nextBed = (u.beds || 0) + 1;
+  };
+  const roomOcc = (u, r) => occ(u.id).filter((a) => r.beds.includes(a.bed)).length;
+  const typeUsed = (t) => rows.some((u) => u.rooms?.some((r) => r.typeId === t.id));
+  const draw = () => {
+    body.innerHTML = `
+    <div class="settings-block">
+      <div class="toolbar"><h2>أنواع الغرف</h2><button class="btn ghost" id="addType">إضافة نوع</button></div>
+      <div class="table-wrap"><table class="units-edit"><thead><tr><th>الاسم</th><th>عدد الأسرّة</th><th>اللون</th><th></th></tr></thead>
+        <tbody>${types.map((t, i) => `<tr><td><input data-t="${i}" data-k="name" value="${esc(t.name)}"></td>
+          <td><input data-t="${i}" data-k="capacity" type="number" min="1" max="12" value="${t.capacity}"></td>
+          <td><input data-t="${i}" data-k="color" type="color" value="${esc(t.color)}" class="color-in"></td>
+          <td>${typeUsed(t) ? `<span class="muted">مستخدم</span>` : `<button class="btn ghost sm" data-deltype="${i}">حذف</button>`}</td></tr>`).join("")}</tbody></table></div>
+      <p class="muted">لون النوع بيظهر على كارت الغرفة والأسرّة المشغولة في صفحة الداخلي. تغيير عدد الأسرّة بيأثر على الغرف الجديدة بس، مش على الغرف اللي اتعملت قبل كده.</p>
+    </div>
+    <div class="toolbar"><h2>أقسام الداخلي وغرفها</h2><button class="btn ghost" id="addW">إضافة قسم</button></div>
+    ${rows.map((u, i) => `<section class="panel dept-edit">
+      <header><input class="dept-name" data-i="${i}" data-k="name" value="${esc(u.name)}" placeholder="اسم القسم">
+        <span class="muted">${wardBeds(u).length} سرير، ${occ(u.id).length} مشغول</span>
+        ${occ(u.id).length ? "" : `<button class="btn ghost sm del" data-del="${i}">حذف القسم</button>`}</header>
+      ${u.rooms ? `<div class="table-wrap"><table class="units-edit"><thead><tr><th>الغرفة</th><th>النوع</th><th>الأسرّة</th><th>مشغول</th><th></th></tr></thead><tbody>
+        ${u.rooms.map((r, j) => { const t = roomTypeOf(r), o = roomOcc(u, r); return `<tr><td><input data-i="${i}" data-j="${j}" data-k="rname" value="${esc(r.name)}"></td>
+          <td><span class="type-chip" style="background:${t.color};color:${textOn(t.color)}">${esc(t.name)}</span></td><td>${r.beds.length}</td><td>${o}</td>
+          <td>${o ? "" : `<button class="btn ghost sm" data-delroom="${i}:${j}">حذف</button>`}</td></tr>`; }).join("") || `<tr><td colspan="5" class="muted">لسه مفيش غرف.</td></tr>`}</tbody></table></div>`
+        : `<div class="note">القسم ده بأسرّة من غير غرف (${u.beds || 0} سرير). <button class="linkbtn" data-conv="${i}">حوّلهم لغرف فردية</button> عشان تقدر تضيف غرف دوبل وتربل. الأسرّة المشغولة بتفضل في مكانها.</div>`}
+      <div class="add-room"><select data-addtype="${i}">${types.map((t) => `<option value="${t.id}">${esc(t.name)} (${t.capacity})</option>`).join("")}</select>
+        <input data-addname="${i}" placeholder="اسم الغرفة (اختياري)"><button class="btn ghost sm" data-addroom="${i}">إضافة غرفة</button></div>
+    </section>`).join("") || `<div class="empty">لا يوجد أقسام. اضغط "إضافة قسم".</div>`}
+    <div class="err" id="wuErr" style="margin-top:12px"></div>
+    <div class="actions" style="margin-top:12px"><button class="btn" id="saveW">حفظ</button></div>`;
+    body.querySelectorAll("[data-t]").forEach((el) => (el.oninput = () => { types[el.dataset.t][el.dataset.k] = el.type === "number" ? Number(el.value) : el.value; }));
+    body.querySelectorAll("[data-deltype]").forEach((b) => (b.onclick = () => { types.splice(+b.dataset.deltype, 1); draw(); }));
+    document.getElementById("addType").onclick = () => { types.push({ id: "t" + uid(), name: "غرفة جديدة", capacity: 4, color: "#0E6B63" }); draw(); };
+    body.querySelectorAll("[data-k][data-i]").forEach((el) => (el.oninput = () => {
+      if (el.dataset.k === "rname") rows[el.dataset.i].rooms[el.dataset.j].name = el.value; else rows[el.dataset.i][el.dataset.k] = el.value;
+    }));
+    body.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { rows.splice(+b.dataset.del, 1); draw(); }));
+    body.querySelectorAll("[data-delroom]").forEach((b) => (b.onclick = () => { const [i, j] = b.dataset.delroom.split(":"); rows[i].rooms.splice(+j, 1); draw(); }));
+    body.querySelectorAll("[data-conv]").forEach((b) => (b.onclick = () => { ensureRooms(rows[+b.dataset.conv]); draw(); }));
+    body.querySelectorAll("[data-addroom]").forEach((b) => (b.onclick = () => {
+      const u = rows[+b.dataset.addroom];
+      const t = types.find((x) => x.id === body.querySelector(`[data-addtype="${b.dataset.addroom}"]`).value);
+      if (!t) return;
+      ensureRooms(u);
+      const start = u.nextBed || Math.max(0, ...wardBeds(u)) + 1;
+      const name = body.querySelector(`[data-addname="${b.dataset.addroom}"]`).value.trim() || `غرفة ${u.rooms.length + 1}`;
+      u.rooms.push({ id: "r" + uid(), name, typeId: t.id, beds: Array.from({ length: t.capacity }, (_, k) => start + k) });
+      u.nextBed = start + t.capacity;
+      draw();
+    }));
+    document.getElementById("addW").onclick = () => { rows.push({ id: "w" + uid(), name: "", beds: 0, rooms: [], nextBed: 1 }); draw(); };
+    document.getElementById("saveW").onclick = async () => {
+      const err = document.getElementById("wuErr");
+      for (const t of types) {
+        t.name = String(t.name || "").trim(); t.capacity = Number(t.capacity);
+        if (!t.name) { err.textContent = "كل نوع غرفة لازم يكون ليه اسم."; return; }
+        if (!Number.isInteger(t.capacity) || t.capacity < 1 || t.capacity > 12) { err.textContent = `عدد الأسرّة في "${t.name}" لازم يكون من 1 لـ 12.`; return; }
+      }
+      for (const u of rows) {
+        u.name = String(u.name || "").trim();
+        if (!u.name) { err.textContent = "كل قسم لازم يكون ليه اسم."; return; }
+        if (u.rooms) {
+          const names = u.rooms.map((r) => String(r.name || "").trim());
+          if (names.some((n) => !n)) { err.textContent = `كل غرفة في "${u.name}" لازم يكون ليها اسم.`; return; }
+          if (new Set(names).size !== names.length) { err.textContent = `في "${u.name}" فيه غرفتين بنفس الاسم.`; return; }
+          u.rooms.forEach((r, j) => (r.name = names[j]));
+          u.beds = wardBeds(u).length;
+        } else if (!Number.isInteger(u.beds) || u.beds < 1) { err.textContent = `عدد الأسرّة في "${u.name}" غير صحيح.`; return; }
+        const bedsOf = wardBeds(u);
+        const lost = occ(u.id).find((a) => !bedsOf.includes(a.bed));
+        if (lost) { err.textContent = `في "${u.name}" مريض (${lost.patientName}) على سرير مش موجود في الغرف.`; return; }
+      }
+      try { await updateDoc(doc(db, "config", "settings"), { wardUnits: rows, roomTypes: types }); toast("تم الحفظ"); } catch (e) { err.textContent = errText(e); }
+    };
+  };
+  draw();
+}
+
+/* ---------- تسجيل إعطاء الدواء (بالوقت واسم اللي أعطى) ---------- */
+function openGiveDialog(colPath, id) {
+  formDialog("تسجيل إعطاء الدواء", `
+    ${timeInput("at", "وقت وتاريخ الإعطاء")}
+    <label class="field"><span>اسم اللي أعطى الدواء</span><input name="by" value="${esc(S.profile.doctorName || S.profile.displayName)}"></label>`,
+    "تم الإعطاء", async (f) => {
+      const by = f.elements.by.value.trim();
+      if (!by) return "اكتب اسم اللي أعطى الدواء.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      await updateDoc(doc(db, ...colPath, "medlog", id), { given: true, givenAt: Timestamp.fromDate(at), givenBy: S.profile.uid, givenByName: by });
+      toast("تم تسجيل الإعطاء");
+    });
+}
+
+/* ---------- سجل الإعطاء في الرعاية (MAR) ---------- */
+function openMarGive(m) {
+  const cd = currentDose(m);
+  formDialog(`إعطاء: ${esc(m.name)}`, `
+    <div class="info ltr-auto">${esc([m.name, cd.dose, m.route, cd.frequency].filter(Boolean).join(" - "))}</div>
+    ${timeInput("at", "وقت وتاريخ الإعطاء")}
+    <label class="field"><span>اسم اللي أعطى الدواء</span><input name="by" value="${esc(S.profile.doctorName || S.profile.displayName)}"></label>
+    <label class="field"><span>ملاحظة (اختياري)</span><input name="note"></label>`,
+    "تم الإعطاء", async (f) => {
+      const by = f.elements.by.value.trim();
+      if (!by) return "اكتب اسم اللي أعطى الدواء.";
+      const [at, er] = readTime(f.elements.at); if (er) return er;
+      await addDoc(subRef("mar"), { medId: m.id, medName: m.name, dose: cd.dose || "", frequency: cd.frequency || "", route: m.route || "",
+        givenAt: Timestamp.fromDate(at), givenByName: by, note: f.elements.note.value.trim(), ...meta() });
+      toast("تم تسجيل الإعطاء");
+    });
+}
+function marLogHtml() {
+  const P = S.P, list = [...(P.mar || [])].sort((x, y) => toDate(y.givenAt) - toDate(x.givenAt));
+  if (!list.length) return "";
+  return `<section class="panel stack-gap"><header><h2>سجل الإعطاء</h2></header><div class="table-wrap"><table>
+    <thead><tr><th>الوقت</th><th>الدواء</th><th>الجرعة</th><th>اللي أعطى</th><th>ملاحظة</th><th></th></tr></thead>
+    <tbody>${list.slice(0, 200).map((e) => `<tr><td class="nowrap">${fmtDateTime(e.givenAt)}</td><td class="ltr"><strong>${esc(e.medName)}</strong></td>
+      <td class="ltr">${esc([e.dose, e.frequency].filter(Boolean).join(" - "))}</td><td>${esc(e.givenByName)}</td><td>${esc(e.note || "")}</td>
+      <td>${(isAdmin() || e.createdBy === S.profile.uid) && pCanEditN(e.givenAt) ? `<button class="linkbtn del" data-act="marDel" data-id="${e.id}">حذف</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
+}
+
+/* ---------- صفحة التمريض الرئيسية ---------- */
+function renderNurseHome() {
+  const NH = (S.NH = { cons: null, inv: {}, subbed: new Set() });
+  shell(`<div class="loading">جاري التحميل…</div>`);
+  S.pageUnsubs.push(onSnapshot(query(collection(db, "consults"), where("status", "==", "pending")), (s) => {
+    NH.cons = s.docs.map((d) => ({ id: d.id, ...d.data() })); drawNurseHome();
+  }, () => { NH.cons = []; drawNurseHome(); }));
+  drawNurseHome();
+}
+function drawNurseHome() {
+  const NH = S.NH;
+  if (!NH || S.page !== "nurse") return;
+  const icuUnits = visibleUnits(), wardUs = visibleWardUnits();
+  // متابعة التحاليل والأشعة المنتظرة لكل حالة رعاية
+  icuUnits.flatMap((u) => S.adm[u.id] || []).forEach((a) => {
+    if (NH.subbed.has(a.id)) return;
+    NH.subbed.add(a.id);
+    S.pageUnsubs.push(onSnapshot(collection(db, "admissions", a.id, "entries"), (s) => {
+      NH.inv[a.id] = s.docs.map((d) => d.data()).filter((e) => e.kind === "investigation" && !e.result).map((e) => e.name);
+      drawNurseHome();
+    }, () => { NH.inv[a.id] = []; }));
+  });
+  const ops = canSee("ops") ? (S.opsUpcoming || []) : null;
+  const info = (t, a) => {
+    const cons = [...new Set((NH.cons || []).filter((c) => c.admissionId === a.id).map((c) => c.specialty))];
+    const inv = t === "icu" ? NH.inv[a.id] || [] : [a.xrays, a.labs, a.requests].filter(Boolean);
+    const op = ops ? ops.filter((o) => o.patientId === a.patientId).sort((x, y) => toDate(x.proposedAt) - toDate(y.proposedAt))[0] : null;
+    return { cons, inv, op };
+  };
+  const all = [];
+  icuUnits.forEach((u) => (S.adm[u.id] || []).forEach((a) => all.push({ t: "icu", a, u, ...info("icu", a) })));
+  wardUs.forEach((u) => (S.wardActive || []).filter((a) => a.deptId === u.id).forEach((a) => all.push({ t: "ward", a, u, ...info("ward", a) })));
+  const kpi = (n, l, hot) => `<div class="kpi ${hot ? "hot" : ""}"><strong>${n}</strong><span>${l}</span></div>`;
+  const badges = (x) => `${x.cons.length ? `<span class="nb2 c" title="عروض: ${esc(x.cons.join("، "))}">🩺 ${esc(x.cons.join("، "))}</span>` : ""}
+    ${x.inv.length ? `<span class="nb2 i" title="${esc(x.inv.join("، "))}">🧪 ${x.inv.length}</span>` : ""}
+    ${x.op ? `<span class="nb2 o" title="${esc(x.op.operation)}">🔪 ${fmtDate(x.op.proposedAt)}</span>` : ""}`;
+  const unitBlock = (t, u) => {
+    const mine = all.filter((x) => x.t === t && x.u.id === u.id);
+    const total = t === "icu" ? u.beds : wardBeds(u).length;
+    let map;
+    if (t === "ward") {
+      const byId = Object.fromEntries(mine.map((x) => [x.a.id, x]));
+      map = wardUnitHtml(u, mine.map((x) => x.a), { canAdmit: false, extra: (a) => `<span class="bed-badges">${badges(byId[a.id])}</span>` });
+    } else {
+      let tiles = "";
+      const byBed = Object.fromEntries(mine.map((x) => [x.a.bed, x]));
+      for (let n = 1; n <= u.beds; n++) {
+        const x = byBed[n];
+        tiles += x ? `<a class="bed occ" href="#/patient/${x.a.id}"><span class="bed-no">${esc(u.bedLabel)} ${n}</span><span class="bed-day"><b>${dayOfStay(x.a.admitAt)}</b><small>يوم</small></span>
+          <span class="bed-name">${esc(x.a.patientName)}</span><span class="bed-badges">${x.a.clinical?.resp === "vent" ? `<span class="nb2 v">فنت</span>` : ""}${badges(x)}</span></a>`
+          : `<div class="bed free"><span class="bed-no">${esc(u.bedLabel)} ${n}</span><span class="bed-state">فارغ</span></div>`;
+      }
+      map = `<div class="beds">${tiles}</div>`;
+    }
+    const sorted = [...mine].sort((x, y) => x.a.bed - y.a.bed);
+    return `<section class="unit"><header class="unit-head"><h2>${t === "icu" ? "رعاية: " : ""}${esc(u.name)}</h2>
+      <div class="unit-stats"><span><b>${mine.length}</b> حالة</span><span class="s-free"><b>${total - mine.length}</b> فارغ</span>
+        ${ops ? `<span><b>${mine.filter((x) => x.op).length}</b> عمليات</span>` : ""}<span><b>${mine.filter((x) => x.cons.length).length}</b> عروض</span>
+        <span><b>${mine.filter((x) => x.inv.length).length}</b> مطلوب تحاليل/أشعة</span></div></header>
+      ${map}
+      ${mine.length ? `<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>المكان</th><th>المريض</th><th>الإقامة</th><th>العروض</th><th>تحاليل وأشعة مطلوبة</th>${ops ? "<th>عملية</th>" : ""}</tr></thead>
+        <tbody>${sorted.map((x) => `<tr><td>${esc(t === "icu" ? `${u.bedLabel} ${x.a.bed}` : wardBedText(u.id, x.a.bed))}</td>
+          <td><a href="${t === "icu" ? `#/patient/${x.a.id}` : `#/w/${x.a.id}`}"><strong>${esc(x.a.patientName)}</strong></a></td>
+          <td class="${stayDays(x.a) > 7 ? "wait" : ""}"><strong>${stayDays(x.a)}</strong> يوم</td>
+          <td>${x.cons.map((c) => `<span class="pill">${esc(c)}</span>`).join("") || "—"}</td>
+          <td class="ltr-auto">${x.inv.length ? x.inv.map((i) => `<div>${esc(String(i).split("\n")[0])}</div>`).join("") : "—"}</td>
+          ${ops ? `<td>${x.op ? `${fmtDate(x.op.proposedAt)}، ${esc(x.op.operation)}` : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></div>` : ""}</section>`;
+  };
+  shell(`
+  <div class="toolbar"><h2>التمريض</h2>${S.profile.shared ? `<button class="btn ghost sm" id="chNurse">تغيير الاسم (${esc(S.profile.doctorName || "")})</button>` : ""}</div>
+  ${!icuUnits.length && !wardUs.length ? `<div class="empty">مفيش وحدة أو قسم متحدد لحسابك. كلّم الأدمن.</div>` : ""}
+  <div class="kpis">${kpi(all.length, "حالة")}${ops ? kpi(all.filter((x) => x.op).length, "حالات عمليات") : ""}
+    ${kpi(all.filter((x) => x.cons.length).length, "حالات عليها عروض")}${kpi(all.filter((x) => x.inv.length).length, "حالات مطلوب لها تحاليل/أشعة")}
+    ${all.some((x) => stayDays(x.a) > 7) ? kpi(all.filter((x) => stayDays(x.a) > 7).length, "إقامة أكتر من 7 أيام", true) : ""}</div>
+  ${icuUnits.map((u) => unitBlock("icu", u)).join("")}${wardUs.map((u) => unitBlock("ward", u)).join("")}`);
+  document.getElementById("chNurse")?.addEventListener("click", () => { sessionStorage.removeItem("deptDoctor_" + S.profile.uid); S.profile.doctorName = ""; askDeptDoctor(); });
 }
