@@ -618,3 +618,79 @@ ul.notes li p{margin:0 0 2px;white-space:pre-wrap}
 .panel > header .btn.sm{margin-inline-start:auto}
 
 .ot-n{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+
+/* ===== صلاحيات العمليات والمستهلكات والمشاكل ===== */
+.ops-box select{border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;background:#fff;max-width:320px}
+.ops-detail{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:10px;border:1px dashed var(--line);border-radius:10px}
+.ops-tasks{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 12px}
+.sub-h{font-size:14px;margin:12px 0 6px;color:var(--muted)}
+table.mini{width:100%;border-collapse:collapse}
+table.mini td{padding:4px 6px;border-bottom:1px solid var(--line)}
+td.num{text-align:center;font-variant-numeric:tabular-nums}
+.cons-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px 14px}
+.cons-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.cons-row label{flex:1}
+.cons-row input[type=number]{width:80px;border:1px solid var(--line);border-radius:6px;padding:5px 7px;font:inherit}
+.cons-row.other{margin-top:8px}
+.cons-row.other input:not([type=number]){flex:1;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
+.dur-box{margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--paper,#EDF2F0);border-radius:10px;padding:10px 14px}
+.dur-box strong{font-size:18px}
+.st-inc{background:var(--danger);color:#fff}
+.inc-head h1{color:var(--danger)}
+.inc-banner{background:var(--danger);color:#fff;font-weight:700;border-radius:10px;padding:10px 14px;margin:10px 0}
+.panel.inc-panel{border:2px solid var(--danger);background:var(--danger-soft)}
+.inc-txt{color:var(--danger);font-weight:700}
+.ot-bed.ot-inc{border-color:var(--danger)!important;box-shadow:0 0 0 2px var(--danger-soft)}
+.inc-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.inc-list li{border-inline-start:4px solid var(--danger);padding:6px 10px;background:#fff;border-radius:6px}
+.inc-list li.closed{border-color:var(--line);opacity:.85}
+.inc-list p{margin:4px 0}
+.inc-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.inc-close{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);font-size:13.5px}
+.quick{display:flex;gap:6px;flex-wrap:wrap}
+.ops-tasks label,.cons-list label{display:flex;gap:8px;justify-content:flex-start;align-items:center;text-align:start}
+
+/* ===== أقسام المستشفى: داخلي (زيتي) / خارجي (أزرق لبني) / إداري (أخضر) ===== */
+:root{--area-in:#55682A;--area-in-soft:#EEF2E1;--area-out:#1F7AB8;--area-out-soft:#E3F1FA;--area-adm:#2E7D32;--area-adm-soft:#E4F2E5}
+.topbar.area-in{background:var(--area-in)}
+.topbar.area-out{background:var(--area-out)}
+.topbar.area-adm{background:var(--area-adm)}
+.topbar.area-in .brand small,.topbar.area-out .brand small,.topbar.area-adm .brand small{color:#fff;opacity:.9;font-weight:600}
+.topbar.area-in .nav a,.topbar.area-out .nav a,.topbar.area-adm .nav a{color:rgba(255,255,255,.88)}
+.topbar.area-in .nav a.on,.topbar.area-out .nav a.on,.topbar.area-adm .nav a.on{background:rgba(255,255,255,.2);color:#fff}
+.nav a.area-back{border:1px solid rgba(255,255,255,.35)}
+body[data-area="in"] .page{border-top:4px solid var(--area-in)}
+body[data-area="out"] .page{border-top:4px solid var(--area-out)}
+body[data-area="adm"] .page{border-top:4px solid var(--area-adm)}
+.portal{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
+.pa-card{display:flex;flex-direction:column;gap:12px;border-radius:16px;padding:22px;text-decoration:none;color:var(--ink);background:#fff;border:1px solid var(--line);border-top:8px solid}
+.pa-in{border-top-color:var(--area-in);background:linear-gradient(180deg,var(--area-in-soft),#fff 70%)}
+.pa-out{border-top-color:var(--area-out);background:linear-gradient(180deg,var(--area-out-soft),#fff 70%)}
+.pa-adm{border-top-color:var(--area-adm);background:linear-gradient(180deg,var(--area-adm-soft),#fff 70%)}
+a.pa-card:hover{box-shadow:0 6px 20px rgba(0,0,0,.08)}
+.pa-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.pa-top h2{margin:0;font-size:22px}
+.pa-in h2{color:var(--area-in)}.pa-out h2{color:var(--area-out)}.pa-adm h2{color:var(--area-adm)}
+.pa-card p{margin:0;color:var(--muted)}
+.pa-go{font-weight:700;color:var(--area-in)}
+.pa-soon{font-size:12px;font-weight:600;border-radius:999px;padding:2px 10px;background:#fff;border:1px solid var(--line);color:var(--muted)}
+.pa-stats{display:flex;gap:10px;flex-wrap:wrap}
+.pa-stat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;min-width:90px}
+.pa-stat strong{display:block;font-size:22px;color:var(--area-in)}
+.pa-stat strong small{font-size:13px;color:var(--muted)}
+.pa-stat span{font-size:12.5px;color:var(--muted)}
+.pa-chips{display:flex;gap:6px;flex-wrap:wrap}
+.pa-chips span,.pa-chips a{font-size:13px;border-radius:999px;padding:3px 12px;background:#fff;border:1px solid var(--line);color:var(--ink);text-decoration:none}
+.pa-out .pa-chips a:hover{border-color:var(--area-out);color:var(--area-out)}
+.pa-adm .pa-chips a:hover{border-color:var(--area-adm);color:var(--area-adm)}
+.out-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.out-tile{display:flex;flex-direction:column;gap:4px;padding:20px;border-radius:12px;background:#fff;border:1px solid var(--line);border-top:5px solid var(--area-out);text-decoration:none;color:var(--ink)}
+.out-tile strong{font-size:18px;color:var(--area-out)}
+.out-tile span{font-size:12.5px;color:var(--muted)}
+.soon-box{max-width:560px;margin:30px auto;text-align:center;background:#fff;border:1px solid var(--line);border-radius:16px;padding:30px;border-top:6px solid}
+.area-out-box{border-top-color:var(--area-out)}.area-out-box h2{color:var(--area-out)}
+.area-adm-box{border-top-color:var(--area-adm)}.area-adm-box h2{color:var(--area-adm)}
+.nav{flex-wrap:wrap;flex:1 1 auto;min-width:0;row-gap:4px}
+.nav a{white-space:nowrap}
+.topbar .me{margin-inline-start:auto}
+.topbar .btn.ghost{color:#fff;border-color:rgba(255,255,255,.45)}
