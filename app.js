@@ -7,7 +7,7 @@ import {
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where,
   onSnapshot, runTransaction, writeBatch, serverTimestamp, Timestamp, addDoc, deleteDoc,
-  orderBy, limit, arrayUnion
+  orderBy, limit, arrayUnion, increment
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, USER_EMAIL_DOMAIN } from "./firebase-config.js";
 
@@ -197,7 +197,7 @@ const checkedValues = (form, name) => [...form.querySelectorAll(`input[name="${n
    ========================================================= */
 onSnapshot(doc(db, "config", "settings"), (snap) => {
   S.settings = snap.exists() ? snap.data() : null;
-  document.title = (S.settings?.hospitalName ? S.settings.hospitalName + " | " : "") + "الرعاية المركزة";
+  document.title = (S.settings?.hospitalName ? S.settings.hospitalName + " | " : "") + "نظام المستشفى";
   if (S.profile) { subscribeAdmissions(); if (wardKeyNow() !== S.wardKey) subscribeSections(); }
   route();
 }, (e) => {
@@ -279,7 +279,7 @@ function route() {
   if (isDept() && !["", "home", "dept", "patient", "w", "consults"].includes(page)) { location.hash = "#/"; return; }
   if (isClerk() && !["", "home", "patients"].includes(page)) { location.hash = "#/"; return; }
   if (isPharm() && !["", "home", "pharmacy"].includes(page)) { location.hash = "#/"; return; }
-  if (isNurseRole() && !["", "home", "nursing", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "opsn", "o"].includes(page)) { location.hash = "#/"; return; }
+  if (isNurseRole() && !["", "home", "nursing", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "opsn", "opstats", "opslists", "o"].includes(page)) { location.hash = "#/"; return; }
   const newKey = location.hash;
   // لو نفس الصفحة ومفيش غير تحديث بيانات، متعيدش فتح المستمعين
   if (S._lastHash === newKey && S.page && S.page !== "login" && S.page !== "setup") {
@@ -289,11 +289,21 @@ function route() {
   S._lastHash = newKey;
   cleanupPage();
 
-  if ((page === "" || page === "home" || page === "pharmacy") && isPharm()) {
+  if (page === "" && isAdmin()) {
+    renderPortal();
+  } else if (["in", "out", "adm"].includes(page) && !isAdmin()) {
+    location.hash = "#/"; return;
+  } else if (page === "in") {
+    S.page = "home"; renderHome();
+  } else if (page === "out") {
+    renderOutArea(parts[1] || "");
+  } else if (page === "adm") {
+    renderAdmArea();
+  } else if ((page === "" || page === "home" || page === "pharmacy") && isPharm()) {
     renderPharmacy();
   } else if (page === "pharmacy" && isAdmin()) {
     renderPharmacy();
-  } else if ((page === "" || page === "home") && isNurseRole() && !canSee("icu") && !canSee("ward") && lvl("ops") === "nurse") {
+  } else if ((page === "" || page === "home") && isNurseRole() && !canSee("icu") && !canSee("ward") && opsType() === "nurse") {
     renderOpsMap("nurse");
   } else if ((page === "" || page === "home") && isNurseRole()) {
     S.page = "nurse"; renderNurseHome();
@@ -328,8 +338,12 @@ function route() {
     S.page = "handover"; renderHandover(parts[1] ? decodeURIComponent(parts[1]) : "");
   } else if (page === "board" && (canSee("icu") || canSee("ward"))) {
     S.page = "board"; renderBoard();
-  } else if ((page === "opsn" && (isAdmin() || lvl("ops") === "nurse")) || (page === "ops" && lvl("ops") === "nurse")) {
+  } else if ((page === "opsn" && canSee("ops") && (isOpManager() || opsType() === "nurse")) || (page === "ops" && opsType() === "nurse")) {
     renderOpsMap("nurse");
+  } else if (page === "opstats" && canSee("ops") && opCan("stats")) {
+    S.page = "opstats"; renderOpsStats();
+  } else if (page === "opslists" && opCan("lists")) {
+    S.page = "opslists"; renderOpsLists();
   } else if (page === "ops" && canSee("ops")) {
     S.page = "ops"; renderOps();
   } else if (page === "o" && parts[1] && canSee("ops")) {
@@ -359,19 +373,25 @@ function route() {
 
 function shell(inner) {
   const s = S.settings, p = S.profile;
+  const area = areaOfPage(S.page);
+  document.body.dataset.area = area;
+  const areaNav = area === "portal" ? `<a href="#/" class="on">أقسام المستشفى</a>`
+    : area === "out" ? `${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}<a href="#/out" class="${S.page === "out" && !location.hash.split("/")[2] ? "on" : ""}">الرئيسية</a>${OUT_DEPTS.map(([k, l]) => `<a href="#/out/${k}" class="${location.hash === `#/out/${k}` ? "on" : ""}">${l}</a>`).join("")}`
+    : area === "adm" ? `${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}<a href="#/adm" class="on">الرئيسية</a>` : "";
   root.innerHTML = `
-  <header class="topbar">
+  <header class="topbar area-${area}">
     <a class="brand" href="#/">
       ${s.logo ? `<img src="${s.logo}" alt="">` : ""}
-      <span><strong>${esc(s.hospitalName)}</strong><small>نظام المستشفى</small></span>
+      <span><strong>${esc(s.hospitalName)}</strong><small>${area === "portal" ? "نظام المستشفى" : AREAS[area].name}</small></span>
     </a>
-    <nav class="nav">
-      <a href="#/" class="${(["home", "dept", "clerk"].includes(S.page) || (S.page === "nurse" && isNurseRole()) || (S.page === "pharmacy" && isPharm())) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
+    <nav class="nav">${areaNav || `
+      ${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}
+      <a href="${isAdmin() ? "#/in" : "#/"}" class="${(["home", "dept", "clerk"].includes(S.page) || (S.page === "nurse" && isNurseRole()) || (S.page === "pharmacy" && isPharm())) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
       ${isDept() || isNurseRole() || isPharm() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
       ${!isNurseRole() && (canSee("icu") || canSee("ward")) ? `<a href="#/nursing" class="${S.page === "nurse" ? "on" : ""}">التمريض</a>` : ""}
       ${canSee("icu") ? `<a href="#/icu" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
       ${canSee("ward") ? `<a href="#/ward" class="${["ward", "wadm"].includes(S.page) ? "on" : ""}">الداخلي</a>` : ""}
-      ${canSee("ops") ? `<a href="${lvl("ops") === "nurse" ? "#/opsn" : "#/ops"}" class="${["ops", "opsn", "op"].includes(S.page) ? "on" : ""}">العمليات</a>` : ""}
+      ${canSee("ops") ? `<a href="${opsType() === "nurse" ? "#/opsn" : "#/ops"}" class="${["ops", "opsn", "op", "opstats", "opslists"].includes(S.page) ? "on" : ""}">العمليات</a>` : ""}
       ${canSee("reports") ? `<a href="#/reports" class="${["reports", "report"].includes(S.page) ? "on" : ""}">التقارير الطبية</a>` : ""}
       ${isAdmin() ? `<a href="#/dept" class="${S.page === "dept" ? "on" : ""}">الأقسام</a>` : ""}
       ${isAdmin() ? `<a href="#/pharmacy" class="${S.page === "pharmacy" ? "on" : ""}">الصيدلية</a>` : ""}
@@ -379,7 +399,7 @@ function shell(inner) {
       ${isAdmin() || mySpecs().length || canEditAny() ? `<a href="#/consults" class="${S.page === "consults" ? "on" : ""}">الاستشارات${(S.consultIn || []).length ? ` <b class="nb">${S.consultIn.length}</b>` : ""}</a>` : ""}
       ${isAdmin() ? `<a href="#/archive" class="${S.page === "archive" ? "on" : ""}">الأرشيف</a>
       <a href="#/stats" class="${S.page === "stats" ? "on" : ""}">الإحصائيات</a>
-      <a href="#/settings" class="${S.page === "settings" ? "on" : ""}">الإعدادات</a>` : ""}
+      <a href="#/settings" class="${S.page === "settings" ? "on" : ""}">الإعدادات</a>` : ""}`}
     </nav>
     <div class="me">
       <button class="btn ghost sm ${installPrompt ? "" : "hidden"}" id="installBtn">تثبيت التطبيق</button>
@@ -1835,7 +1855,7 @@ async function tabUsers(body) {
     <tbody>${list.map((u) => `<tr>
       <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clerk" ? ` <span class="pill">إداري</span>` : u.role === "nurse" ? ` <span class="pill">تمريض${u.shared ? " (مشترك)" : ""}</span>` : u.role === "pharmacy" ? ` <span class="pill">صيدلية${u.shared ? " (مشترك)" : ""}</span>` : ""}</td>
       <td class="ltr">${esc(u.username)}</td>
-      ${Object.keys(SECTIONS).map((k) => `<td>${u.role === "admin" ? "كاملة" : `${levelLabel(secOf(u, k))}${k === "icu" && secOf(u, k) !== "none" ? `<div class="by-line">${esc(unitNames(u.units)) || "بدون وحدات"}</div>` : ""}${k === "ward" && secOf(u, k) !== "none" ? `<div class="by-line">${Array.isArray(u.wardDepts) ? esc(u.wardDepts.map((id) => wardById(id)?.name).filter(Boolean).join("، ")) || "بدون أقسام" : "كل الأقسام"}</div>` : ""}`}</td>`).join("")}
+      ${Object.keys(SECTIONS).map((k) => `<td>${u.role === "admin" ? "كاملة" : k === "ops" ? (opsTypeOf(u) === "none" ? levelLabel("none") : `${OPS_TYPES[opsTypeOf(u)]}<div class="by-line">${opsPermsOf(u).length} مهمة${(u.opTheaters || []).length ? `، ${esc(u.opTheaters.map((id) => opTheaterById(id)?.name).filter(Boolean).join("، "))}` : ""}</div>`) : `${levelLabel(secOf(u, k))}${k === "icu" && secOf(u, k) !== "none" ? `<div class="by-line">${esc(unitNames(u.units)) || "بدون وحدات"}</div>` : ""}${k === "ward" && secOf(u, k) !== "none" ? `<div class="by-line">${Array.isArray(u.wardDepts) ? esc(u.wardDepts.map((id) => wardById(id)?.name).filter(Boolean).join("، ")) || "بدون أقسام" : "كل الأقسام"}</div>` : ""}`}</td>`).join("")}
       <td>${u.role === "admin" || u.print ? "نعم" : "—"}</td>
       <td>${u.role === "admin" ? "مفتوحة" : `${u.editWindowHours || 12} ساعة`}</td>
       <td>${u.active ? "مفعّل" : `<span class="status-off">موقوف</span>`}</td>
@@ -1868,7 +1888,7 @@ function openUserDialog(u, done) {
         <select name="editWindowHours"><option value="12" ${u.editWindowHours !== 24 ? "selected" : ""}>12 ساعة (الشيفت الحالي)</option><option value="24" ${u.editWindowHours === 24 ? "selected" : ""}>24 ساعة (الشيفت الحالي واللي قبله)</option></select></label>
     </div>
     <div class="doc-only perm-grid">
-      ${Object.entries(SECTIONS).map(([k, l]) => `<div class="field"><span>${l}</span><fieldset class="seg">${Object.entries(levelsFor(k)).filter(([lv]) => lv !== "nurse" || secOf(k) === "nurse").map(([lv, ll]) =>
+      ${Object.entries(SECTIONS).filter(([k]) => k !== "ops").map(([k, l]) => `<div class="field"><span>${l}</span><fieldset class="seg">${Object.entries(levelsFor(k)).filter(([lv]) => lv !== "nurse" || secOf(k) === "nurse").map(([lv, ll]) =>
         `<label><input type="radio" name="sec_${k}" value="${lv}" ${secOf(k) === lv ? "checked" : ""}> ${ll}</label>`).join("")}</fieldset></div>`).join("")}
     </div>
     <div class="field doc-only" id="icuUnits"><span>وحدات الرعاية المسموح بيها</span>
@@ -1879,12 +1899,18 @@ function openUserDialog(u, done) {
       <div class="checks">${units().map((x) => `<label><input type="checkbox" name="nunits" value="${x.id}" ${u.role === "nurse" && (u.units || []).includes(x.id) ? "checked" : ""}> ${esc(x.name)}</label>`).join("")}</div></div>
     <div class="field nurse-only"><span>تمريض الداخلي: الأقسام</span>
       <div class="checks">${wardUnits().map((x) => `<label><input type="checkbox" name="nwards" value="${x.id}" ${u.role === "nurse" && (u.wardDepts || []).includes(x.id) ? "checked" : ""}> ${esc(x.name)}</label>`).join("") || `<span class="muted">ضيف أقسام الداخلي الأول.</span>`}</div></div>
-    <div class="field nurse-only"><span>تمريض العمليات: الأقسام</span>
-      <div class="checks">${opTheaters().map((t) => `<label><input type="checkbox" name="nopth" value="${t.id}" ${u.role === "nurse" && ["read", "nurse"].includes(u.sections?.ops) && (!Array.isArray(u.opTheaters) || !u.opTheaters.length || u.opTheaters.includes(t.id)) ? "checked" : ""}> ${esc(t.name)}</label>`).join("")}</div></div>
     <div class="checks nurse-only">
       <label><input type="checkbox" name="nVitals" ${u.nurseVitals ? "checked" : ""}> يسجّل العلامات الحيوية (في الرعاية)</label>
       <label><input type="checkbox" name="nShared" ${u.shared && u.role === "nurse" ? "checked" : ""}> حساب مشترك (بيسأل عن اسم الممرض)</label></div>
     <p class="hint nurse-only">التمريض بيشوف حالات وحداته وأقسامه بس (وفي العمليات بيسجّل أوقات المراحل والتشيك ليست)، ويكتب ملاحظات التمريض، ويسجّل إعطاء الأدوية بالوقت واسم اللي أعطى. مبيقدرش يعدّل العلاج أو الجرعة أو المدة.</p>
+    <div class="field ops-box"><span>العمليات</span>
+      <select name="opsType">${Object.entries(OPS_TYPES).map(([k, l]) => `<option value="${k}" ${opsTypeOf(u) === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <div class="ops-detail">
+        <span class="hint">المهام المسموح بيها (بتتعلّم لوحدها حسب النوع، وتقدر تعدّلها)</span>
+        <div class="checks ops-tasks">${OPS_TASKS.map(([k, l]) => `<label><input type="checkbox" name="opsPerm" value="${k}" ${opsPermsOf(u).includes(k) ? "checked" : ""}> ${l}</label>`).join("")}</div>
+        <span class="hint">أقسام العمليات (لو مفيش علامة يبقى كل الأقسام)</span>
+        <div class="checks">${opTheaters().map((t) => `<label><input type="checkbox" name="opth" value="${t.id}" ${(u.opTheaters || []).includes(t.id) ? "checked" : ""}> ${esc(t.name)}</label>`).join("")}</div>
+      </div></div>
     <div class="checks pharm-only"><label><input type="checkbox" name="pShared" ${u.shared && u.role === "pharmacy" ? "checked" : ""}> حساب مشترك (بيسأل عن اسم الصيدلي كل مرة)</label></div>
     <p class="hint pharm-only">الصيدلي بيشوف صفحة طلبات الأدوية اليومية بس (اسم المريض والقسم والدواء والجرعة)، ويعلّم متوفر أو غير متاح والكمية وتم الصرف، ويكتب البدائل. مبيشوفش ملف المريض.</p>
     <div class="checks doc-only"><label><input type="checkbox" name="print" ${u.print ? "checked" : ""}> صلاحية الطباعة و PDF</label></div>
@@ -1907,6 +1933,8 @@ function openUserDialog(u, done) {
     f.querySelectorAll(".dept-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "dept"));
     f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse", "pharmacy"].includes(f.elements.role.value)));
     f.querySelectorAll(".pharm-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "pharmacy"));
+    f.querySelectorAll(".ops-box").forEach((el) => el.classList.toggle("hidden", !["doctor", "nurse"].includes(f.elements.role.value)));
+    f.querySelector(".ops-detail").classList.toggle("hidden", f.elements.opsType.value === "none");
     f.querySelectorAll(".nurse-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "nurse"));
     f.querySelectorAll(".clerk-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "clerk"));
     if (f.elements.role.value === "doctor") {
@@ -1915,6 +1943,11 @@ function openUserDialog(u, done) {
     }
   };
   f.elements.role.onchange = sync;
+  f.elements.opsType.onchange = () => {
+    const def = OPS_DEFAULTS[f.elements.opsType.value] || [];
+    f.querySelectorAll('input[name="opsPerm"]').forEach((c) => { c.checked = def.includes(c.value); });
+    sync();
+  };
   f.querySelectorAll('input[name="sec_icu"], input[name="sec_ward"]').forEach((r) => (r.onchange = sync));
   sync();
 
@@ -1923,17 +1956,22 @@ function openUserDialog(u, done) {
     const err = document.getElementById("userErr");
     err.textContent = "";
     const role = self ? "admin" : f.elements.role.value;
-    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse", "pharmacy"].includes(role) ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
+    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse", "pharmacy"].includes(role) || k === "ops" ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
+    const oType = ["doctor", "nurse"].includes(role) ? f.elements.opsType.value : role === "admin" ? "manager" : "none";
+    const oPerms = oType === "none" ? [] : checkedValues(f, "opsPerm");
+    if (role === "admin") sections.ops = "write";
+    else if (oType !== "none") sections.ops = oPerms.includes("book") ? "write" : oType === "nurse" ? "nurse" : "read";
     const isN = role === "nurse";
-    const nUnits = isN ? checkedValues(f, "nunits") : [], nWards = isN ? checkedValues(f, "nwards") : [], nOpTh = isN ? checkedValues(f, "nopth") : [];
-    if (isN) Object.assign(sections, { icu: nUnits.length ? "nurse" : "none", ward: nWards.length ? "nurse" : "none", ops: nOpTh.length ? "nurse" : "none", reports: "none" });
+    const nUnits = isN ? checkedValues(f, "nunits") : [], nWards = isN ? checkedValues(f, "nwards") : [];
+    if (isN) Object.assign(sections, { icu: nUnits.length ? "nurse" : "none", ward: nWards.length ? "nurse" : "none", reports: "none" });
     const data = {
       displayName: f.elements.displayName.value.trim(), role, sections,
       access: ["none", "nurse"].includes(sections.icu) ? "read" : sections.icu,
       units: isN ? nUnits : role === "admin" || sections.icu === "none" ? [] : checkedValues(f, "units"),
       wardDepts: isN ? nWards : role === "doctor" && sections.ward !== "none" ? checkedValues(f, "wdepts") : [],
       nurseVitals: isN ? f.elements.nVitals.checked : false,
-      opTheaters: isN ? nOpTh : [],
+      opsType: oType, opsPerms: oPerms,
+      opTheaters: oType === "none" ? [] : checkedValues(f, "opth"),
       print: role === "admin" ? true : ["dept", "clerk", "nurse", "pharmacy"].includes(role) ? false : f.elements.print.checked,
       clerkSections: role === "clerk" ? checkedValues(f, "clerkSec") : [],
       shared: role === "dept" ? f.elements.sharedAcc.checked : isN ? f.elements.nShared.checked : role === "pharmacy" ? f.elements.pShared.checked : false,
@@ -1943,7 +1981,8 @@ function openUserDialog(u, done) {
     };
     if (!data.displayName) { err.textContent = "اكتب اسم المستخدم الظاهر."; return; }
     if (role === "dept" && !data.deptSpecialty) { err.textContent = "اختر القسم."; return; }
-    if (isN && !nUnits.length && !nWards.length && !nOpTh.length) { err.textContent = "اختر وحدة رعاية أو قسم داخلي أو قسم عمليات واحد على الأقل."; return; }
+    if (oType !== "none" && !oPerms.length) { err.textContent = "اختر مهمة واحدة على الأقل في العمليات، أو خلي النوع \"مفيش دخول\"."; return; }
+    if (isN && !nUnits.length && !nWards.length && oType === "none") { err.textContent = "اختر وحدة رعاية أو قسم داخلي أو قسم عمليات واحد على الأقل."; return; }
     if (role === "doctor" && sections.ward !== "none" && wardUnits().length && !data.wardDepts.length) { err.textContent = "اختر قسم داخلي واحد على الأقل."; return; }
     if (role === "clerk" && !data.clerkSections.length) { err.textContent = "اختر الرعاية أو الداخلي (أو الاتنين)."; return; }
     if (role === "doctor" && Object.values(sections).every((x) => x === "none")) { err.textContent = "اختر قسم واحد على الأقل."; return; }
@@ -2653,7 +2692,7 @@ function printDoc(title, bodyHtml, withLogo) {
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
   <style>${PRINT_CSS}</style></head><body>
   <header class="ph">${withLogo && s.logo ? `<img src="${s.logo}" alt="">` : ""}
-    <div><strong>${esc(s.hospitalName)}</strong><span>الرعاية المركزة</span></div>
+    <div><strong>${esc(s.hospitalName)}</strong><span>${areaOfPage(S.page) === "portal" ? "" : AREAS[areaOfPage(S.page)].name}</span></div>
     <div class="ph-meta">تاريخ الطباعة: ${fmtDateTime(new Date())}<br>${esc(S.profile.displayName)}</div></header>
   ${bodyHtml}</body></html>`;
   document.getElementById("printFrame")?.remove();
@@ -3207,7 +3246,7 @@ function drawHub() {
       ${canEditAny() ? `<button class="btn ghost" data-h="band">بطاقة تعريف</button>` : ""}
       ${canEdit("icu") && !inside ? `<button class="btn" data-h="icu">دخول رعاية</button>` : ""}
       ${canEdit("ward") && !inside ? `<button class="btn" data-h="ward">دخول داخلي</button>` : ""}
-      ${canEdit("ops") ? `<button class="btn" data-h="op">حجز عملية</button>` : ""}
+      ${opCan("book") ? `<button class="btn" data-h="op">حجز عملية</button>` : ""}
     </div>
   </div>
   <div class="file-grid">
@@ -3574,7 +3613,7 @@ function renderOps() {
   S.page = "ops";
   const T = (S.O ||= { from: isoDay(new Date()), to: addDays(isoDay(new Date()), 7), status: "scheduled" });
   shell(`
-  <div class="toolbar"><h2>العمليات: القائمة</h2><div class="ph-tools"><button class="btn ghost sm" id="opMap">خريطة العمليات</button>${canEdit("ops") ? `<button class="btn" id="newOp">حجز عملية</button>` : ""}</div></div>
+  <div class="toolbar"><h2>العمليات: القائمة</h2><div class="ph-tools"><button class="btn ghost sm" id="opMap">خريطة العمليات</button>${opCan("stats") ? `<a class="btn ghost sm" href="#/opstats">الإحصائيات</a>` : ""}${opCan("book") ? `<button class="btn" id="newOp">حجز عملية</button>` : ""}</div></div>
   <form class="filters" id="opF">
     <label class="field"><span>من</span><input type="date" name="from" value="${T.from}"></label>
     <label class="field"><span>إلى</span><input type="date" name="to" value="${T.to}"></label>
@@ -3600,7 +3639,7 @@ function renderOps() {
           const d = isoDay(toDate(o.proposedAt));
           const head = d !== lastDay ? `<tr class="day-row"><td colspan="9">${new Intl.DateTimeFormat("ar-EG", { weekday: "long" }).format(toDate(o.proposedAt))} ${fmtDate(d)}</td></tr>` : "";
           lastDay = d;
-          return head + `<tr><td class="nowrap"><a href="#/o/${o.id}"><strong>${fmtTime(o.proposedAt)}</strong></a></td>
+          return head + `<tr class="${o.incOpen > 0 ? "ph-red" : ""}"><td class="nowrap"><a href="#/o/${o.id}"><strong>${fmtTime(o.proposedAt)}</strong></a></td>
             <td><a href="#/o/${o.id}">${esc(o.patientName)}</a><div class="by-line ltr">${esc(o.medicalId || "")}</div></td>
             <td class="ltr-auto">${esc(o.operation)}</td><td>${esc(opPlace(o) || "—")}</td><td>${esc(o.specialty || "")}</td><td>${esc(o.consultant || "")}</td><td>${esc(o.anesthesia || "")}</td>
             <td>${o.caseType === "طوارئ" ? `<span class="dis t-death">طوارئ</span>` : esc(o.caseType || "")}</td>
@@ -3669,13 +3708,15 @@ function openOperation(o, p, preset = {}) {
 
 function renderOperation(id) {
   shell(`<div class="loading">جاري التحميل…</div>`);
-  const O = (S.OP = { id, o: null, meds: [], ph: [], notes: [] });
+  ensureOpsLists();
+  const O = (S.OP = { id, o: null, meds: [], ph: [], notes: [], incs: [] });
   const draw = () => { if (S.OP === O && S.page === "op" && O.o) drawOperation(); };
   S.pageUnsubs.push(onSnapshot(doc(db, "operations", id), (s) => {
     if (!s.exists()) { shell(`<div class="empty">العملية غير موجودة.</div>`); return; }
     O.o = { id: s.id, ...s.data() }; draw();
   }, () => shell(`<div class="empty">ليس لديك صلاحية لعرض العمليات.</div>`)));
   S.pageUnsubs.push(onSnapshot(query(collection(db, "pharmacy"), where("parentId", "==", id)), (s) => { O.ph = s.docs.map((d) => d.data()); draw(); }, () => {}));
+  S.pageUnsubs.push(onSnapshot(collection(db, "operations", id, "incidents"), (s) => { O.incs = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(collection(db, "operations", id, "notes"), (s) => { O.notes = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(collection(db, "operations", id, "medlog"), (s) => { O.meds = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
 }
@@ -4102,6 +4143,7 @@ function liveRefresh() {
   else if (S.page === "home") renderHome();
   else if (S.page === "board") renderBoard();
   else if (S.page === "nurse") drawNurseHome();
+  else if (S.page === "portal") renderPortal();
   else if (S.page === "ops" || S.page === "opsn") { drawOpsMap(); refreshBell(); }
   else refreshBell();
 }
@@ -5897,13 +5939,55 @@ const opTheaters = () => (S.settings?.opTheaters?.length ? S.settings.opTheaters
 const opTheaterById = (id) => opTheaters().find((t) => t.id === id);
 const opBedName = (o) => opTheaterById(o.theaterId)?.beds.find((b) => b.id === o.bedId)?.name || "";
 const opPlace = (o) => [opTheaterById(o.theaterId)?.name, opBedName(o)].filter(Boolean).join("، ");
-const opChecklist = () => (S.settings?.opChecklist?.length ? S.settings.opChecklist : DEFAULT_OP_CHECKLIST);
-const isOpNurse = () => !isAdmin() && lvl("ops") === "nurse";
+const opChecklist = () => (S.opsLists?.checklist?.length ? S.opsLists.checklist : S.settings?.opChecklist?.length ? S.settings.opChecklist : DEFAULT_OP_CHECKLIST);
+const opConsumables = () => S.opsLists?.consumables || [];
+const opDevices = () => S.opsLists?.devices?.length ? S.opsLists.devices : ["مونيتور", "دياثيرم", "دريل", "جهاز تخدير", "شفاط", "تورنيكيه", "منظار"];
+// قوائم العمليات (المستهلكات والأجهزة والتشيك ليست): مدير العمليات بيعدّلها
+function ensureOpsLists() {
+  if (S._opsListsSub || !S.profile) return;
+  S._opsListsSub = onSnapshot(doc(db, "config", "opsLists"), (s) => {
+    S.opsLists = s.data() || {};
+    if (["op", "opslists"].includes(S.page)) { S._lastHash = null; route(); }
+  }, () => { S.opsLists = {}; });
+}
+
+/* ---------- صلاحيات العمليات: نوع الحساب + قائمة مهام لكل يوزر ---------- */
+const OPS_TASKS = [["book", "حجز العمليات وتعديل الحجز"], ["cancel", "إلغاء العملية"], ["report", "كتابة تقرير العملية"], ["postop", "أوامر بعد العملية"],
+  ["meds", "كتابة أدوية العملية"], ["give", "إعطاء الأدوية"], ["stages", "تسجيل الدخول والخروج ومراحل العملية"], ["checklist", "التشيك ليست قبل العملية"],
+  ["consum", "المستهلكات والأجهزة والأشعة"], ["notes", "ملاحظات التمريض"], ["incident", "تسجيل تقرير مشكلة"], ["closeInc", "مراجعة وقفل تقارير المشاكل"],
+  ["stats", "إحصائيات العمليات"], ["lists", "قوائم المستهلكات والأجهزة والتشيك ليست"], ["finance", "يشوف المعاملة المالية"]];
+const OPS_TYPES = { none: "مفيش دخول على العمليات", doctor: "أطباء العمليات", nurse: "تمريض العمليات", manager: "مدير العمليات" };
+const OPS_DEFAULTS = { none: [], doctor: ["book", "cancel", "report", "postop", "meds", "incident", "finance"],
+  nurse: ["stages", "checklist", "consum", "notes", "give", "incident"], manager: OPS_TASKS.map((t) => t[0]) };
+// الحسابات القديمة (من غير opsPerms) بتاخد صلاحياتها من مستوى قسم العمليات
+const LEGACY_OPS = { write: ["book", "cancel", "report", "postop", "meds", "give", "incident"], nurse: ["stages", "checklist", "consum", "notes", "give", "incident"] };
+function opsTypeOf(u) {
+  if (!u) return "none";
+  if (u.role === "admin") return "manager";
+  if (u.opsType) return u.opsType;
+  const l = u.sections?.ops || "none";
+  return l === "nurse" ? "nurse" : l === "none" ? "none" : "doctor";
+}
+function opsPermsOf(u) {
+  if (!u) return [];
+  if (u.role === "admin") return OPS_DEFAULTS.manager;
+  if (Array.isArray(u.opsPerms)) return u.opsPerms;
+  return LEGACY_OPS[u.sections?.ops] || [];
+}
+const opsType = () => opsTypeOf(S.profile);
+const opCan = (t) => isAdmin() || opsPermsOf(S.profile).includes(t);
+const isOpNurse = () => !isAdmin() && opsType() === "nurse";
+const isOpManager = () => isAdmin() || opsType() === "manager";
 function myOpTheaters() {
   const all = opTheaters(), mine = S.profile?.opTheaters;
-  return isAdmin() || !isOpNurse() || !Array.isArray(mine) || !mine.length ? all : all.filter((t) => mine.includes(t.id));
+  return isAdmin() || !Array.isArray(mine) || !mine.length ? all : all.filter((t) => mine.includes(t.id));
 }
-const canOpNurse = (o) => o.status !== "cancelled" && (isAdmin() || (isOpNurse() && (!o.theaterId || myOpTheaters().some((t) => t.id === o.theaterId))));
+const opThOk = (o) => isAdmin() || !o.theaterId || myOpTheaters().some((t) => t.id === o.theaterId);
+const opDo = (o, t) => o.status !== "cancelled" && opCan(t) && opThOk(o);
+// مدة العملية: من دخول الغرفة لحد الخروج (أو لحد انتهاء العملية لو لسه مخرجش)
+const opMinutes = (o) => (o.inRoomAt && (o.outAt || o.endAt) ? Math.max(0, Math.round((toDate(o.outAt || o.endAt) - toDate(o.inRoomAt)) / 60000)) : null);
+const minText = (m) => (m == null ? "—" : m < 60 ? `${m} دقيقة` : `${Math.floor(m / 60)} س ${m % 60} د`);
+const INC_CATS = ["مضاعفة طبية", "مشكلة في التخدير", "خطأ دوائي", "عطل جهاز", "نقص مستهلكات أو أدوات", "تأخير أو إلغاء", "مشكلة في العدّ (شاش/آلات)", "سقوط أو إصابة", "أخرى"];
 const opBy = () => S.profile.doctorName || S.profile.displayName;
 function opStage(o) {
   if (o.status === "cancelled") return "cancelled";
@@ -5966,6 +6050,7 @@ const nextAct = (o) => ({ booked: ["in", "دخل الغرفة"], inroom: ["end",
 // ---------- خريطة العمليات ----------
 function renderOpsMap(mode) {
   S.page = mode === "nurse" ? "opsn" : "ops";
+  ensureOpsLists();
   const prev = S.OM || {};
   const M = (S.OM = { mode, day: prev.day || isoDay(new Date()), th: prev.th || "", byQ: {}, ops: [] });
   const nurse = mode === "nurse";
@@ -5974,10 +6059,12 @@ function renderOpsMap(mode) {
     <div class="ph-tools">
       <label class="field inline"><span>جدول يوم</span><input type="date" id="omDay" value="${M.day}"></label>
       ${!nurse ? `<button class="btn ghost sm" id="omList">القائمة والبحث</button>` : ""}
-      ${!nurse && isAdmin() ? `<a class="btn ghost sm" href="#/opsn">صفحة التمريض</a>` : ""}
-      ${nurse && isAdmin() ? `<a class="btn ghost sm" href="#/ops">صفحة الأطباء</a>` : ""}
-      ${nurse && S.profile.shared ? `<button class="btn ghost sm" id="chOpN">تغيير الاسم (${esc(S.profile.doctorName || "")})</button>` : ""}
-      ${!nurse && canEdit("ops") ? `<button class="btn" id="newOp">حجز عملية</button>` : ""}
+      ${!nurse && isOpManager() ? `<a class="btn ghost sm" href="#/opsn">صفحة التمريض</a>` : ""}
+      ${nurse && isOpManager() ? `<a class="btn ghost sm" href="#/ops">صفحة الأطباء</a>` : ""}
+      ${opCan("stats") ? `<a class="btn ghost sm" href="#/opstats">الإحصائيات</a>` : ""}
+      ${opCan("lists") ? `<a class="btn ghost sm" href="#/opslists">المستهلكات والأجهزة</a>` : ""}
+      ${S.profile.shared ? `<button class="btn ghost sm" id="chOpN">تغيير الاسم (${esc(S.profile.doctorName || "")})</button>` : ""}
+      ${!nurse && opCan("book") ? `<button class="btn" id="newOp">حجز عملية</button>` : ""}
     </div></div>
   <div id="omBody"><div class="loading">جاري التحميل…</div></div>`);
   document.getElementById("omDay").onchange = (e) => { if (e.target.value) { M.day = e.target.value; S._lastHash = null; renderOpsMap(mode); } };
@@ -6010,8 +6097,8 @@ function drawOpsMap() {
   const occ = M.ops.filter(opOccupies);
   const busyOf = (th, exceptId) => occ.filter((o) => o.theaterId === th && o.id !== exceptId).map((o) => o.bedId);
   const chip = (o) => `<span class="st st-${opStage(o)}">${OP_STAGE[opStage(o)]}</span>`;
-  const act = (o) => { if (!nurse || !canOpNurse(o)) return ""; const n = nextAct(o); return n ? `<button class="btn sm ${n[0] === "in" ? "" : "ghost"}" data-st="${n[0]}" data-id="${o.id}">${n[1]}</button>` : ""; };
-  const name = (o) => `<span class="ot-n"><a href="#/o/${o.id}"><strong>${esc(o.patientName)}</strong></a>${o.caseType === "طوارئ" ? ` <span class="st st-cancelled">طوارئ</span>` : ""}</span>`;
+  const act = (o) => { if (!opDo(o, "stages")) return ""; const n = nextAct(o); return n ? `<button class="btn sm ${n[0] === "in" ? "" : "ghost"}" data-st="${n[0]}" data-id="${o.id}">${n[1]}</button>` : ""; };
+  const name = (o) => `<span class="ot-n"><a href="#/o/${o.id}"><strong>${esc(o.patientName)}</strong></a>${o.caseType === "طوارئ" ? ` <span class="st st-cancelled">طوارئ</span>` : ""}${o.incOpen > 0 ? ` <span class="st st-inc" title="فيه تقرير مشكلة مفتوح">⚠ مشكلة</span>` : ""}</span>`;
   const schedItem = (o) => `<li class="${opStage(o) === "out" ? "done" : ""}"><span class="t">${fmtTime(o.proposedAt)}</span>
       <span class="w">${name(o)}<small class="ltr-auto">${esc(o.operation)}</small><small>${esc(o.consultant || "")}</small></span>${chip(o)}${opStage(o) === "booked" ? act(o) : ""}</li>`;
   const shown = M.th ? ths.filter((t) => t.id === M.th) : ths;
@@ -6022,7 +6109,8 @@ function drawOpsMap() {
     <div class="kpis">${kpi(occ.filter((o) => ths.some((t) => t.id === o.theaterId)).length, "مريض جوه العمليات دلوقتي")}
       ${kpi(dayOps.length, M.day === isoDay(new Date()) ? "عمليات النهارده" : `عمليات ${fmtDate(M.day + "T00:00:00")}`)}
       ${kpi(dayOps.filter((o) => opStage(o) === "out" || opStage(o) === "ended").length, "خلصت")}
-      ${kpi(dayOps.filter((o) => o.caseType === "طوارئ").length, "طوارئ", dayOps.some((o) => o.caseType === "طوارئ") ? "hot" : "")}</div>
+      ${kpi(dayOps.filter((o) => o.caseType === "طوارئ").length, "طوارئ", dayOps.some((o) => o.caseType === "طوارئ") ? "hot" : "")}
+      ${M.ops.some((o) => o.incOpen > 0) ? kpi(M.ops.filter((o) => o.incOpen > 0).length, "عمليات عليها مشكلة مفتوحة", "hot") : ""}</div>
     <nav class="tabs ot-tabs"><a href="" data-th="" class="${!M.th ? "on" : ""}">الكل</a>${ths.map((t) => {
       const n = occ.filter((o) => o.theaterId === t.id).length;
       return `<a href="" data-th="${t.id}" class="${M.th === t.id ? "on" : ""}">${esc(t.name)} <b class="nb2">${n}/${t.beds.length}</b></a>`; }).join("")}</nav>
@@ -6033,11 +6121,11 @@ function drawOpsMap() {
       <div class="ot-grid">${t.beds.map((b) => {
         const cur = occ.find((o) => o.theaterId === t.id && o.bedId === b.id);
         const list = tOps.filter((o) => o.bedId === b.id).sort((x, y) => toDate(x.proposedAt) - toDate(y.proposedAt));
-        return `<div class="ot-bed ${cur ? `ot-busy ots-${opStage(cur)}` : "ot-free"}">
+        return `<div class="ot-bed ${cur ? `ot-busy ots-${opStage(cur)}` : "ot-free"} ${cur?.incOpen > 0 ? "ot-inc" : ""}">
           <div class="ot-h"><strong>${esc(b.name)}</strong>${cur ? chip(cur) : `<span class="st st-free">فاضي</span>`}</div>
           ${cur ? `<div class="ot-cur">${name(cur)}<div class="ltr-auto">${esc(cur.operation)}</div><div class="muted">${esc(cur.consultant || "")}${cur.anesthesia ? `، تخدير: ${esc(cur.anesthesia)}` : ""}</div>
             <div class="ot-time">${opStage(cur) === "inroom" ? `دخل ${fmtTime(cur.inRoomAt)}، بقاله ${sinceText(cur.inRoomAt)}` : `خلصت ${fmtTime(cur.endAt || cur.doneAt)}، مستني الخروج`}</div>${act(cur)}</div>`
-            : !nurse && canEdit("ops") ? `<button class="linkbtn" data-book="${t.id}|${b.id}">+ حجز على ${esc(b.name)}</button>` : ""}
+            : !nurse && opCan("book") ? `<button class="linkbtn" data-book="${t.id}|${b.id}">+ حجز على ${esc(b.name)}</button>` : ""}
           <div class="ot-sch"><span class="lbl">جدول اليوم (${list.length})</span>${list.length ? `<ol>${list.map(schedItem).join("")}</ol>` : `<p class="muted">مفيش حجوزات.</p>`}</div>
         </div>`; }).join("")}</div>
       ${loose.length ? `<div class="ot-loose"><span class="lbl">محجوز في القسم من غير سرير (${loose.length})</span><ol>${loose.map(schedItem).join("")}</ol></div>` : ""}
@@ -6107,50 +6195,142 @@ function opChecklistHtml(o, editable) {
     <div class="checks col">${list.map((x) => `<label><input type="checkbox" data-ck="${esc(x)}" ${items[x] ? "checked" : ""} ${editable ? "" : "disabled"}> ${esc(x)}</label>`).join("")}</div>`;
 }
 
+// ---------- المستهلكات والأجهزة والأشعة (التمريض) ----------
+function opConsumHtml(o) {
+  const c = o.consumables || [], dv = o.devices || [], x = o.xray;
+  if (!c.length && !dv.length && !x?.used) return `<p class="muted">لسه متسجلش مستهلكات.</p>`;
+  return `${c.length ? `<h3 class="sub-h">المستهلكات</h3><table class="mini"><tbody>${c.map((i) => `<tr><td>${esc(i.name)}</td><td class="num">${esc(i.qty)}</td></tr>`).join("")}</tbody></table>` : ""}
+    ${dv.length ? `<h3 class="sub-h">الأجهزة</h3><table class="mini"><tbody>${dv.map((i) => `<tr><td>${esc(i.name)}</td><td class="num">${minText(i.minutes)}</td></tr>`).join("")}</tbody></table>` : ""}
+    ${x?.used ? `<h3 class="sub-h">جهاز الأشعة</h3><p>الفني: <strong>${esc(x.tech || "—")}</strong>، عدد الصور: <strong>${esc(x.shots ?? "—")}</strong></p>` : ""}
+    ${o.consumByName ? `<p class="by-line">سجّلها ${esc(o.consumByName)}، ${fmtDateTime(o.consumAt)}</p>` : ""}`;
+}
+function openConsum(o) {
+  const cur = Object.fromEntries((o.consumables || []).map((i) => [i.name, i.qty]));
+  const curD = Object.fromEntries((o.devices || []).map((i) => [i.name, i.minutes]));
+  const names = [...new Set([...opConsumables(), ...Object.keys(cur)])];
+  const devs = [...new Set([...opDevices(), ...Object.keys(curD)])];
+  const defMin = opMinutes(o) ?? (o.inRoomAt ? Math.round((Date.now() - toDate(o.inRoomAt)) / 60000) : "");
+  const x = o.xray || {};
+  const row = (kind, n, v, ph) => `<div class="cons-row"><label><input type="checkbox" data-k="${kind}" value="${esc(n)}" ${v != null ? "checked" : ""}> ${esc(n)}</label>
+    <input type="number" min="0" data-q="${kind}" data-n="${esc(n)}" value="${v ?? ""}" placeholder="${ph}" ${v != null ? "" : "disabled"}></div>`;
+  formDialog(`المستهلكات والأجهزة: ${esc(o.patientName)}`, `
+    <h3 class="sub-h">المستهلكات (علّم واكتب العدد)</h3>
+    ${names.length ? `<div class="cons-list">${names.map((n) => row("c", n, cur[n], "العدد")).join("")}</div>` : `<p class="hint">قائمة المستهلكات فاضية. مدير العمليات يضيفها من "المستهلكات والأجهزة".</p>`}
+    <div class="cons-row other"><input name="oName" placeholder="صنف مش في القائمة"><input type="number" min="1" name="oQty" placeholder="العدد"></div>
+    <h3 class="sub-h">الأجهزة (المدة بالدقايق، الافتراضي مدة العملية)</h3>
+    <div class="cons-list">${devs.map((n) => row("d", n, curD[n], defMin === "" ? "دقايق" : String(defMin))).join("")}</div>
+    <h3 class="sub-h">جهاز الأشعة</h3>
+    <label class="cons-row"><span><input type="checkbox" name="xUsed" ${x.used ? "checked" : ""}> اتستخدم جهاز الأشعة</span></label>
+    <div class="row2"><label class="field"><span>اسم الفني</span><input name="xTech" value="${esc(x.tech || "")}"></label>
+      <label class="field"><span>عدد الصور</span><input name="xShots" type="number" min="0" value="${x.shots ?? ""}"></label></div>`,
+    "حفظ", async (f) => {
+      const read = (kind) => [...f.querySelectorAll(`input[data-k="${kind}"]:checked`)].map((c) => {
+        const q = f.querySelector(`input[data-q="${kind}"][data-n="${CSS.escape(c.value)}"]`);
+        return { name: c.value, v: q.value === "" ? null : Number(q.value) };
+      });
+      const consumables = read("c").map(({ name, v }) => ({ name, qty: v || 1 }));
+      if (f.elements.oName.value.trim()) consumables.push({ name: f.elements.oName.value.trim(), qty: Number(f.elements.oQty.value) || 1 });
+      const devices = read("d").map(({ name, v }) => ({ name, minutes: v ?? (defMin === "" ? 0 : defMin) }));
+      const xray = f.elements.xUsed.checked ? { used: true, tech: f.elements.xTech.value.trim(), shots: Number(f.elements.xShots.value) || 0 } : null;
+      if (xray && !xray.tech) return "اكتب اسم فني الأشعة.";
+      await updateDoc(doc(db, "operations", o.id), { consumables, devices, xray, consumByName: opBy(), consumAt: Timestamp.now(), ...upMeta() });
+      toast("تم حفظ المستهلكات");
+    });
+  const g = document.getElementById("gForm");
+  g.querySelectorAll("input[data-k]").forEach((c) => (c.onchange = () => {
+    const q = g.querySelector(`input[data-q="${c.dataset.k}"][data-n="${CSS.escape(c.value)}"]`);
+    q.disabled = !c.checked;
+    if (c.checked && q.value === "") q.value = c.dataset.k === "c" ? 1 : defMin;
+    if (!c.checked) q.value = "";
+  }));
+}
+
+// ---------- تقارير المشاكل ----------
+function opIncHtml(o, incs) {
+  if (!incs.length) return `<p class="muted">مفيش مشاكل متسجلة.</p>`;
+  return `<ul class="inc-list">${[...incs].sort((a, b) => toDate(b.at) - toDate(a.at)).map((i) => `<li class="${i.closed ? "closed" : "open"}">
+    <div class="inc-h"><strong>${esc(i.category)}</strong><span class="st ${i.closed ? "st-out" : "st-inc"}">${i.closed ? "اتقفلت" : "مفتوحة"}</span><span class="muted">${esc(i.side || "")}</span></div>
+    <p>${esc(i.text)}</p><span class="by-line">${esc(i.createdByName || "")}، ${fmtDateTime(i.at)}</span>
+    ${i.closed ? `<div class="inc-close"><b>رد مدير العمليات:</b> ${esc(i.closeNote || "")}<span class="by-line">${esc(i.closedByName || "")}، ${fmtDateTime(i.closedAt)}</span></div>`
+      : opCan("closeInc") ? `<button class="btn ghost sm" data-inc-close="${i.id}">مراجعة وقفل</button>` : ""}</li>`).join("")}</ul>`;
+}
+function openIncident(o) {
+  formDialog(`تقرير مشكلة: ${esc(o.operation)}`, `
+    <div class="row2"><label class="field"><span>النوع</span><select name="cat">${optionsHtml(INC_CATS, "")}</select></label>
+      <label class="field"><span>من</span><select name="side">${optionsHtml(["الأطباء", "التمريض"], opsType() === "nurse" ? "التمريض" : "الأطباء")}</select></label></div>
+    <label class="field"><span>إيه اللي حصل</span><textarea name="text" rows="4"></textarea></label>`, "تسجيل المشكلة", async (f) => {
+    const d = { category: f.elements.cat.value, side: f.elements.side.value, text: f.elements.text.value.trim() };
+    if (!d.category || !d.text) return "اختر النوع واكتب اللي حصل.";
+    const b = writeBatch(db);
+    b.set(doc(collection(db, "operations", o.id, "incidents")), { ...d, closed: false, at: Timestamp.now(), createdBy: S.profile.uid, createdByName: opBy() });
+    b.update(doc(db, "operations", o.id), { incTotal: increment(1), incOpen: increment(1), ...upMeta() });
+    await b.commit();
+    toast("تم تسجيل المشكلة");
+  });
+}
+function closeIncident(o, inc) {
+  formDialog(`قفل المشكلة: ${esc(inc.category)}`, `<p>${esc(inc.text)}</p>
+    <label class="field"><span>الرد / الإجراء اللي اتعمل</span><textarea name="note" rows="3"></textarea></label>`, "قفل المشكلة", async (f) => {
+    const note = f.elements.note.value.trim(); if (!note) return "اكتب الرد.";
+    const b = writeBatch(db);
+    b.update(doc(db, "operations", o.id, "incidents", inc.id), { closed: true, closeNote: note, closedBy: S.profile.uid, closedByName: opBy(), closedAt: Timestamp.now() });
+    b.update(doc(db, "operations", o.id), { incOpen: increment(-1), ...upMeta() });
+    await b.commit();
+    toast("تم قفل المشكلة");
+  });
+}
+
 function drawOperation() {
   const { o, meds } = S.OP;
-  const notes = S.OP.notes || [];
-  const canW = canEdit("ops") && (o.status === "scheduled" || isAdmin());
-  const docW = canEdit("ops") && o.status !== "cancelled";
-  const nW = canOpNurse(o);
+  const notes = S.OP.notes || [], incs = S.OP.incs || [];
   const st = opStage(o), n = nextAct(o);
-  const ckEdit = nW && ["booked", "inroom"].includes(st);
+  const can = (t) => opDo(o, t);
+  const ckEdit = can("checklist") && ["booked", "inroom"].includes(st);
+  const openInc = incs.filter((i) => !i.closed).length;
+  const mins = opMinutes(o);
   shell(`
-  <div class="file-head">
+  <div class="file-head ${openInc ? "inc-head" : ""}">
     <a class="back" href="${isOpNurse() ? "#/opsn" : "#/ops"}">${isOpNurse() ? "تمريض العمليات" : "العمليات"}</a>
     <h1>${esc(o.operation)}</h1>
     <div class="tags">${isOpNurse() ? `<span class="tag"><strong>${esc(o.patientName)}</strong></span>` : `<a class="tag" href="#/p/${o.patientId}"><strong>${esc(o.patientName)}</strong></a>`}
-      ${o.medicalId ? `<span class="tag mr">${esc(o.medicalId)}</span>` : ""}<span class="tag mr">${esc(o.number || "")}</span>
+      ${o.medicalId ? `<span class="tag mr">${esc(o.medicalId)}</span>` : ""}${o.number ? `<span class="tag mr">${esc(o.number)}</span>` : ""}
       <span class="st st-${st}">${OP_STAGE[st]}</span>${opPlace(o) ? `<span class="tag">${esc(opPlace(o))}</span>` : ""}
+      ${mins != null ? `<span class="tag">مدة العملية: ${minText(mins)}</span>` : ""}
       ${o.caseType === "طوارئ" ? `<span class="tag hot">طوارئ</span>` : ""}</div>
+    ${openInc ? `<div class="inc-banner">⚠ فيه ${openInc} تقرير مشكلة مفتوح على العملية دي</div>` : ""}
     <div class="file-actions">
-      ${nW && n ? `<button class="btn" data-o="stage">${n[1]}</button>` : ""}
-      ${canW ? `<button class="btn ghost" data-o="edit">تعديل الحجز</button>` : ""}
-      ${canEdit("ops") && o.status === "scheduled" && !o.inRoomAt ? `<button class="btn ghost" data-o="done">تم التنفيذ</button>` : ""}
-      ${canEdit("ops") && o.status === "scheduled" && !o.inRoomAt ? `<button class="btn ghost del" data-o="cancel">إلغاء العملية</button>` : ""}
-      ${canPrint() ? `<button class="btn ghost" data-o="print">طباعة</button>` : ""}
+      ${can("stages") && n ? `<button class="btn" data-o="stage">${n[1]}</button>` : ""}
+      ${opThOk(o) && opCan("book") && (o.status === "scheduled" || isAdmin()) ? `<button class="btn ghost" data-o="edit">تعديل الحجز</button>` : ""}
+      ${opThOk(o) && opCan("book") && o.status === "scheduled" && !o.inRoomAt ? `<button class="btn ghost" data-o="done">تم التنفيذ</button>` : ""}
+      ${opThOk(o) && opCan("cancel") && o.status === "scheduled" && !o.inRoomAt ? `<button class="btn ghost del" data-o="cancel">إلغاء العملية</button>` : ""}
+      ${can("incident") || (opCan("incident") && o.status === "cancelled") ? `<button class="btn ghost del" data-o="inc">تسجيل مشكلة</button>` : ""}
+      ${canPrint() || isOpManager() ? `<button class="btn ghost" data-o="print">طباعة</button>` : ""}
       ${isAdmin() ? `<button class="btn ghost del" data-o="del">حذف</button>` : ""}
     </div>
   </div>
   <div class="file-grid">
-    <section class="panel"><header><h2>بيانات العملية</h2></header><dl class="kv">
+    <section class="panel ${openInc ? "inc-panel" : ""}"><header><h2>بيانات العملية</h2></header><dl class="kv">
       <dt>القسم والسرير</dt><dd>${esc(opPlace(o) || "لسه متحددش")}</dd>
       <dt>التخصص</dt><dd>${esc(o.specialty || "—")}</dd><dt>التشخيص</dt><dd class="ltr-auto">${esc(o.diagnosis || "—")}</dd>
       <dt>الميعاد المقترح</dt><dd>${fmtDateTime(o.proposedAt)}</dd>
       <dt>استشاري الحالة</dt><dd>${esc(o.consultant || "—")}</dd><dt>استشاري التخدير</dt><dd>${esc(o.anesthesia || "—")}</dd>
-      <dt>نوع الحالة</dt><dd>${esc(o.caseType || "—")}</dd>${isOpNurse() ? "" : `<dt>المعاملة المالية</dt><dd>${esc(o.finance || "—")}</dd>`}
+      <dt>نوع الحالة</dt><dd>${esc(o.caseType || "—")}</dd>${opCan("finance") ? `<dt>المعاملة المالية</dt><dd>${esc(o.finance || "—")}</dd>` : ""}
       ${o.notes ? `<dt>ملاحظات</dt><dd>${esc(o.notes)}</dd>` : ""}
       ${o.cancelReason ? `<dt>سبب الإلغاء</dt><dd>${esc(o.cancelReason)}</dd>` : ""}
+      ${o.incTotal ? `<dt>تقارير المشاكل</dt><dd class="${openInc ? "inc-txt" : ""}">${o.incTotal} (${openInc} مفتوح)</dd>` : ""}
       <dt>سجّل الحجز</dt><dd>${esc(o.createdByName || "")}</dd></dl></section>
-    <section class="panel"><header><h2>مراحل العملية</h2></header>${opStagesHtml(o)}</section>
+    <section class="panel"><header><h2>مراحل العملية</h2></header>${opStagesHtml(o)}
+      <div class="dur-box"><span>مدة العملية (من الدخول للخروج)</span><strong>${o.inRoomAt && !o.outAt && !o.endAt ? `شغالة من ${sinceText(o.inRoomAt)}` : minText(mins)}</strong></div></section>
+    ${incs.length || can("incident") ? `<section class="panel ${openInc ? "inc-panel" : ""}" id="oInc"><header><h2>تقارير المشاكل</h2></header>${opIncHtml(o, incs)}</section>` : ""}
     <section class="panel" id="oCk"><header><h2>التشيك ليست قبل العملية</h2></header>${opChecklistHtml(o, ckEdit)}</section>
-    <section class="panel"><header><h2>تقرير العملية</h2>${docW ? `<button class="btn ghost sm" data-o="report">${o.report ? "تعديل التقرير" : "كتابة التقرير"}</button>` : ""}</header>${opReportHtml(o.report)}</section>
-    <section class="panel"><header><h2>أوامر بعد العملية</h2>${docW ? `<button class="btn ghost sm" data-o="postop">${o.postOp ? "تعديل الأوامر" : "كتابة الأوامر"}</button>` : ""}</header>
+    <section class="panel"><header><h2>المستهلكات والأجهزة والأشعة</h2>${can("consum") ? `<button class="btn ghost sm" data-o="consum">${o.consumByName ? "تعديل" : "تسجيل"}</button>` : ""}</header>${opConsumHtml(o)}</section>
+    <section class="panel"><header><h2>تقرير العملية</h2>${can("report") ? `<button class="btn ghost sm" data-o="report">${o.report ? "تعديل التقرير" : "كتابة التقرير"}</button>` : ""}</header>${opReportHtml(o.report)}</section>
+    <section class="panel"><header><h2>أوامر بعد العملية</h2>${can("postop") ? `<button class="btn ghost sm" data-o="postop">${o.postOp ? "تعديل الأوامر" : "كتابة الأوامر"}</button>` : ""}</header>
       ${o.postOp ? `<dl class="kv">${o.postOp.destination ? `<dt>يروح على</dt><dd>${esc(o.postOp.destination)}</dd>` : ""}<dt>الأوامر</dt><dd class="pre">${esc(o.postOp.orders || "—")}</dd>
         <dt>كتبها</dt><dd>${esc(o.postOp.byName || "")}، ${fmtDateTime(o.postOp.at)}</dd></dl>` : `<p class="muted">لسه متكتبش أوامر.</p>`}</section>
-    <section class="panel" id="oMeds"><header><h2>سجل أدوية العملية</h2></header>${medlogHtml(meds, docW, docW || nW, S.OP.ph)}</section>
+    <section class="panel" id="oMeds"><header><h2>سجل أدوية العملية</h2></header>${medlogHtml(meds, can("meds"), can("give"), S.OP.ph)}</section>
     <section class="panel" id="oNotes"><header><h2>ملاحظات التمريض</h2></header>
-      ${nW || (isAdmin() && o.status !== "cancelled") ? `<form class="med-add" id="opNoteF"><input name="t" placeholder="اكتب ملاحظة تمريض…"><button class="btn sm">إضافة</button></form>` : ""}
+      ${can("notes") ? `<form class="med-add" id="opNoteF"><input name="t" placeholder="اكتب ملاحظة تمريض…"><button class="btn sm">إضافة</button></form>` : ""}
       ${notes.length ? `<ul class="notes">${[...notes].sort((a, b) => toDate(b.createdAt || b.at) - toDate(a.createdAt || a.at)).map((x) =>
         `<li><p>${esc(x.text)}</p><span class="by-line">${esc(x.createdByName || "")}، ${fmtDateTime(x.createdAt || x.at)}</span></li>`).join("")}</ul>` : `<p class="muted">مفيش ملاحظات.</p>`}</section>
   </div>`);
@@ -6160,6 +6340,7 @@ function drawOperation() {
     try { await updateDoc(doc(db, "operations", o.id), { checklist: { items, byName: opBy(), at: Timestamp.now() }, ...upMeta() }); }
     catch (e) { toast(errText(e), true); c.checked = !c.checked; }
   }));
+  document.querySelectorAll("[data-inc-close]").forEach((b) => (b.onclick = () => { const i = incs.find((x) => x.id === b.dataset.incClose); if (i) closeIncident(o, i); }));
   const nf = document.getElementById("opNoteF");
   if (nf) nf.onsubmit = async (ev) => {
     ev.preventDefault();
@@ -6173,12 +6354,14 @@ function drawOperation() {
       stage: () => opStageAct(o, n[0], () => []),
       report: () => openOpReport(o),
       postop: () => openPostOp(o),
+      consum: () => openConsum(o),
+      inc: () => openIncident(o),
       edit: () => openOperation(o),
       del: () => deleteOperation(o, meds),
       done: () => formDialog("تم تنفيذ العملية", `<label class="field"><span>ميعاد التنفيذ</span><input name="doneAt" type="datetime-local" value="${toLocalInput(new Date())}" max="${toLocalInput(new Date())}"></label>`,
         "حفظ", async (f) => {
           const d = new Date(f.elements.doneAt.value); if (isNaN(d)) return "حدد الميعاد.";
-          await updateDoc(doc(db, "operations", o.id), { status: "done", stage: "ended", doneAt: Timestamp.fromDate(d), endAt: Timestamp.fromDate(d), endByName: S.profile.displayName, ...upMeta() });
+          await updateDoc(doc(db, "operations", o.id), { status: "done", stage: "ended", doneAt: Timestamp.fromDate(d), endAt: Timestamp.fromDate(d), endBy: S.profile.uid, endByName: S.profile.displayName, ...upMeta() });
           audit("تنفيذ عملية", { adm: { id: o.id, patientName: o.patientName, unitId: "" } }); toast("تم التسجيل");
         }),
       cancel: () => formDialog("إلغاء العملية", `<label class="field"><span>سبب الإلغاء</span><input name="reason"></label>`, "إلغاء العملية", async (f) => {
@@ -6190,11 +6373,16 @@ function drawOperation() {
         printDoc(o.operation, `<h1>${esc(o.operation)}</h1><p class="sub">${esc(o.patientName)}، ${esc(o.medicalId || "")}، ${esc(o.number || "")}${opPlace(o) ? `، ${esc(opPlace(o))}` : ""}</p>
           <dl class="kv">${row("التخصص", o.specialty)}${row("التشخيص", o.diagnosis)}${row("الميعاد المقترح", fmtDateTime(o.proposedAt))}
           ${row("دخل الغرفة", o.inRoomAt && fmtDateTime(o.inRoomAt))}${row("انتهاء العملية", (o.endAt || o.doneAt) && fmtDateTime(o.endAt || o.doneAt))}${row("خرج", o.outAt && `${fmtDateTime(o.outAt)} ${o.outTo ? `إلى ${o.outTo}` : ""}`)}
-          ${row("استشاري الحالة", o.consultant)}${row("استشاري التخدير", o.anesthesia)}${row("نوع الحالة", o.caseType)}${row("المعاملة المالية", o.finance)}</dl>
+          ${row("مدة العملية", mins != null && minText(mins))}
+          ${row("استشاري الحالة", o.consultant)}${row("استشاري التخدير", o.anesthesia)}${row("نوع الحالة", o.caseType)}${opCan("finance") ? row("المعاملة المالية", o.finance) : ""}</dl>
           ${o.report ? `<h2>تقرير العملية</h2><dl class="kv">${row("الجراح", r.surgeon)}${row("المساعدين", r.assistants)}${row("طبيب التخدير", r.anesthetist)}${row("نوع التخدير", r.anesType)}
             ${row("الشق / الوضع", r.incision)}${row("ما وُجد", r.findings)}${row("خطوات العملية", r.procedure)}${row("الشرائح والمسامير", r.implants)}${row("الدرنقات", r.drains)}
             ${row("العينات", r.specimen)}${row("الدم المفقود", r.bloodLoss)}${row("المضاعفات", r.complications)}</dl>` : ""}
           ${o.postOp ? `<h2>أوامر بعد العملية</h2><dl class="kv">${row("يروح على", o.postOp.destination)}${row("الأوامر", o.postOp.orders)}</dl>` : ""}
+          ${(o.consumables || []).length || (o.devices || []).length || o.xray?.used ? `<h2>المستهلكات والأجهزة</h2><table><tbody>
+            ${(o.consumables || []).map((i) => `<tr><td>${esc(i.name)}</td><td>${esc(i.qty)}</td></tr>`).join("")}
+            ${(o.devices || []).map((i) => `<tr><td>${esc(i.name)}</td><td>${minText(i.minutes)}</td></tr>`).join("")}
+            ${o.xray?.used ? `<tr><td>جهاز الأشعة (الفني: ${esc(o.xray.tech || "")})</td><td>${esc(o.xray.shots)} صورة</td></tr>` : ""}</tbody></table>` : ""}
           ${meds.length ? `<h2>الأدوية</h2><table><thead><tr><th>الدواء</th><th>الجرعة</th><th>الموعد</th></tr></thead><tbody>${meds.map((m) => `<tr><td class="ltr">${esc(m.drug)}</td><td class="ltr">${esc(m.dose)}</td><td class="ltr">${esc(m.schedule)}</td></tr>`).join("")}</tbody></table>` : ""}
           <div class="sign"><span>توقيع الجراح: ....................</span><span>توقيع طبيب التخدير: ....................</span></div>`, true);
       },
@@ -6202,10 +6390,131 @@ function drawOperation() {
   };
 }
 
+// ---------- قوائم المستهلكات والأجهزة (مدير العمليات) ----------
+function renderOpsLists() {
+  ensureOpsLists();
+  const L = S.opsLists || {};
+  const ta = (id, l, v, h) => `<section class="panel"><header><h2>${l}</h2></header><label class="field"><span>${h}</span><textarea id="${id}" rows="10">${esc(v.join("\n"))}</textarea></label></section>`;
+  shell(`<div class="toolbar"><h2>قوائم العمليات</h2><div class="ph-tools"><a class="btn ghost sm" href="#/ops">العمليات</a></div></div>
+    <div class="file-grid">
+      ${ta("lCons", "المستهلكات", L.consumables || [], "كل صنف في سطر (مثلاً: شاش، خيط فيكريل 1، جوانتي مقاس 7.5، سرنجة 10)")}
+      ${ta("lDev", "الأجهزة", opDevices(), "كل جهاز في سطر (مونيتور، دياثيرم، دريل…)")}
+      ${ta("lCk", "التشيك ليست قبل العملية", opChecklist(), "كل بند في سطر")}
+    </div>
+    <div class="actions"><button class="btn" id="lSave">حفظ القوائم</button></div>`);
+  document.getElementById("lSave").onclick = async () => {
+    const lines = (id) => [...new Set(document.getElementById(id).value.split("\n").map((x) => x.trim()).filter(Boolean))];
+    try {
+      await setDoc(doc(db, "config", "opsLists"), { consumables: lines("lCons"), devices: lines("lDev"), checklist: lines("lCk"), updatedByName: S.profile.displayName, updatedAt: serverTimestamp() }, { merge: true });
+      toast("تم حفظ القوائم");
+    } catch (e) { toast(errText(e), true); }
+  };
+}
+
+// ---------- إحصائيات العمليات ----------
+function renderOpsStats() {
+  const now = new Date();
+  const T = (S.OST = S.OST || { from: isoDay(new Date(now.getFullYear(), now.getMonth(), 1)), to: isoDay(now), th: "" });
+  shell(`<div class="toolbar"><h2>إحصائيات العمليات</h2><div class="ph-tools"><a class="btn ghost sm" href="#/ops">العمليات</a><button class="btn ghost sm" id="osPrint">طباعة</button></div></div>
+    <form class="filters" id="osF">
+      <label class="field"><span>من</span><input type="date" name="from" value="${T.from}"></label>
+      <label class="field"><span>إلى</span><input type="date" name="to" value="${T.to}"></label>
+      <label class="field"><span>القسم</span><select name="th"><option value="">كل الأقسام</option>${opTheaters().map((t) => `<option value="${t.id}" ${T.th === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></label>
+      <div class="field"><span>&nbsp;</span><div class="quick"><button type="button" class="btn ghost sm" data-q="today">النهارده</button><button type="button" class="btn ghost sm" data-q="7">آخر 7 أيام</button><button type="button" class="btn ghost sm" data-q="month">الشهر ده</button></div></div>
+      <button class="btn">عرض</button>
+    </form><div id="osBody"><div class="loading">جاري الحساب…</div></div>`);
+  const f = document.getElementById("osF");
+  f.querySelectorAll("[data-q]").forEach((b) => (b.onclick = () => {
+    const d = new Date(), t = isoDay(d);
+    f.elements.to.value = t;
+    f.elements.from.value = b.dataset.q === "today" ? t : b.dataset.q === "7" ? addDays(t, -6) : isoDay(new Date(d.getFullYear(), d.getMonth(), 1));
+    f.requestSubmit ? f.requestSubmit() : f.onsubmit(new Event("submit"));
+  }));
+  const load = async () => {
+    Object.assign(T, { from: f.elements.from.value, to: f.elements.to.value, th: f.elements.th.value });
+    const body = document.getElementById("osBody");
+    if (!T.from || !T.to || T.from > T.to) { body.innerHTML = `<div class="err">حدد فترة صحيحة.</div>`; return; }
+    try {
+      const snap = await getDocs(query(collection(db, "operations"), where("proposedAt", ">=", Timestamp.fromDate(new Date(T.from + "T00:00:00"))),
+        where("proposedAt", "<=", Timestamp.fromDate(new Date(T.to + "T23:59:59")))));
+      let ops = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      if (T.th) ops = ops.filter((o) => o.theaterId === T.th);
+      S.OST.ops = ops;
+      body.innerHTML = opsStatsHtml(ops, T);
+      if (ops.some((o) => o.incTotal)) loadIncidentsList(ops.filter((o) => o.incTotal));
+    } catch (e) { body.innerHTML = `<div class="err">${esc(errText(e))}</div>`; }
+  };
+  f.onsubmit = (ev) => { ev.preventDefault(); load(); };
+  document.getElementById("osPrint").onclick = () => {
+    const b = document.getElementById("osBody"); if (!S.OST.ops) return;
+    printDoc("إحصائيات العمليات", `<h1>إحصائيات العمليات</h1><p class="sub">من ${fmtDate(T.from + "T00:00:00")} إلى ${fmtDate(T.to + "T00:00:00")}${T.th ? `، ${esc(opTheaterById(T.th)?.name || "")}` : ""}</p>${b.innerHTML}`, true);
+  };
+  load();
+}
+function opsStatsHtml(ops, T) {
+  const live = ops.filter((o) => o.status !== "cancelled");
+  const done = live.filter((o) => o.status === "done");
+  const timed = live.filter((o) => opMinutes(o) != null);
+  const totMin = timed.reduce((s, o) => s + opMinutes(o), 0);
+  const avg = (arr) => (arr.length ? Math.round(arr.reduce((s, o) => s + opMinutes(o), 0) / arr.length) : null);
+  const kpi = (n, l, cls = "") => `<div class="kpi ${cls}"><strong>${n}</strong><span>${l}</span></div>`;
+  const group = (keyFn, label) => {
+    const m = new Map();
+    ops.forEach((o) => { const k = keyFn(o) || "غير محدد"; if (!m.has(k)) m.set(k, []); m.get(k).push(o); });
+    const rows = [...m.entries()].sort((a, b) => b[1].length - a[1].length);
+    return `<section class="panel"><header><h2>${label}</h2></header><div class="table-wrap"><table>
+      <thead><tr><th>${label.replace("حسب ", "")}</th><th>الكل</th><th>تمت</th><th>ملغية</th><th>طوارئ</th><th>متوسط المدة</th><th>إجمالي الوقت</th><th>مشاكل</th></tr></thead>
+      <tbody>${rows.map(([k, list]) => { const t = list.filter((o) => opMinutes(o) != null);
+        return `<tr><td>${esc(k)}</td><td class="num">${list.length}</td><td class="num">${list.filter((o) => o.status === "done").length}</td><td class="num">${list.filter((o) => o.status === "cancelled").length}</td>
+          <td class="num">${list.filter((o) => o.caseType === "طوارئ").length}</td><td>${minText(avg(t))}</td><td>${minText(t.length ? t.reduce((s, o) => s + opMinutes(o), 0) : null)}</td>
+          <td class="num ${list.some((o) => o.incOpen > 0) ? "inc-txt" : ""}">${list.reduce((s, o) => s + (o.incTotal || 0), 0) || ""}</td></tr>`; }).join("")}</tbody></table></div></section>`;
+  };
+  const sum = (field, valFn) => {
+    const m = new Map();
+    live.forEach((o) => (o[field] || []).forEach((i) => { const r = m.get(i.name) || { n: 0, v: 0 }; r.n++; r.v += valFn(i); m.set(i.name, r); }));
+    return [...m.entries()].sort((a, b) => b[1].v - a[1].v);
+  };
+  const cons = sum("consumables", (i) => Number(i.qty) || 0), devs = sum("devices", (i) => Number(i.minutes) || 0);
+  const xr = live.filter((o) => o.xray?.used);
+  const techs = new Map(); xr.forEach((o) => { const r = techs.get(o.xray.tech || "—") || { n: 0, s: 0 }; r.n++; r.s += Number(o.xray.shots) || 0; techs.set(o.xray.tech || "—", r); });
+  const incT = ops.reduce((s, o) => s + (o.incTotal || 0), 0), incO = ops.reduce((s, o) => s + (o.incOpen || 0), 0);
+  return `
+    <div class="kpis">${kpi(ops.length, "عملية محجوزة")}${kpi(done.length, "تمت")}${kpi(ops.filter((o) => o.status === "cancelled").length, "ملغية")}
+      ${kpi(live.filter((o) => o.caseType === "طوارئ").length, "طوارئ")}${kpi(minText(avg(timed)), "متوسط مدة العملية")}${kpi(minText(totMin), "إجمالي وقت العمليات")}
+      ${kpi(incT, `تقارير مشاكل${incO ? ` (${incO} مفتوح)` : ""}`, incO ? "hot" : "")}${kpi(xr.reduce((s, o) => s + (Number(o.xray.shots) || 0), 0), "صور أشعة")}</div>
+    ${timed.length < live.length ? `<p class="hint">${live.length - timed.length} عملية من غير أوقات دخول وخروج، فمش داخلة في حساب المدة.</p>` : ""}
+    <div class="file-grid">
+      ${group((o) => opTheaterById(o.theaterId)?.name, "حسب القسم")}
+      ${group((o) => o.specialty, "حسب التخصص")}
+      ${group((o) => o.consultant, "حسب الاستشاري")}
+      ${group((o) => opPlace(o) || "", "حسب السرير / الغرفة")}
+      <section class="panel"><header><h2>المستهلكات</h2></header>${cons.length ? `<div class="table-wrap"><table><thead><tr><th>الصنف</th><th>إجمالي العدد</th><th>عدد العمليات</th></tr></thead>
+        <tbody>${cons.map(([k, r]) => `<tr><td>${esc(k)}</td><td class="num">${r.v}</td><td class="num">${r.n}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">مفيش مستهلكات متسجلة.</p>`}</section>
+      <section class="panel"><header><h2>الأجهزة</h2></header>${devs.length ? `<div class="table-wrap"><table><thead><tr><th>الجهاز</th><th>مرات الاستخدام</th><th>إجمالي المدة</th></tr></thead>
+        <tbody>${devs.map(([k, r]) => `<tr><td>${esc(k)}</td><td class="num">${r.n}</td><td>${minText(r.v)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">مفيش أجهزة متسجلة.</p>`}</section>
+      <section class="panel"><header><h2>جهاز الأشعة</h2></header>${xr.length ? `<div class="table-wrap"><table><thead><tr><th>الفني</th><th>عدد العمليات</th><th>عدد الصور</th></tr></thead>
+        <tbody>${[...techs.entries()].map(([k, r]) => `<tr><td>${esc(k)}</td><td class="num">${r.n}</td><td class="num">${r.s}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">مستخدمش جهاز الأشعة في الفترة دي.</p>`}</section>
+    </div>
+    <section class="panel inc-panel-soft" id="osInc"><header><h2>تقارير المشاكل</h2></header>${incT ? `<div class="loading">جاري التحميل…</div>` : `<p class="muted">مفيش مشاكل متسجلة في الفترة دي.</p>`}</section>`;
+}
+async function loadIncidentsList(ops) {
+  const box = document.getElementById("osInc"); if (!box) return;
+  try {
+    const all = (await Promise.all(ops.map(async (o) => (await getDocs(collection(db, "operations", o.id, "incidents"))).docs.map((d) => ({ o, ...d.data() }))))).flat()
+      .sort((a, b) => toDate(b.at) - toDate(a.at));
+    const byCat = new Map(); all.forEach((i) => byCat.set(i.category, (byCat.get(i.category) || 0) + 1));
+    box.innerHTML = `<header><h2>تقارير المشاكل (${all.length})</h2></header>
+      <p>${[...byCat.entries()].map(([k, n]) => `<span class="pill">${esc(k)}: ${n}</span>`).join(" ")}</p>
+      <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>المريض</th><th>العملية</th><th>النوع</th><th>من</th><th>اللي حصل</th><th>الحالة</th></tr></thead>
+      <tbody>${all.map((i) => `<tr class="${i.closed ? "" : "ph-red"}"><td class="nowrap">${fmtDateTime(i.at)}</td><td><a href="#/o/${i.o.id}">${esc(i.o.patientName)}</a></td><td class="ltr-auto">${esc(i.o.operation)}</td>
+        <td>${esc(i.category)}</td><td>${esc(i.side || "")}<div class="by-line">${esc(i.createdByName || "")}</div></td><td>${esc(i.text)}${i.closed ? `<div class="by-line">الرد: ${esc(i.closeNote || "")}</div>` : ""}</td>
+        <td>${i.closed ? "اتقفلت" : `<span class="st st-inc">مفتوحة</span>`}</td></tr>`).join("")}</tbody></table></div>`;
+  } catch (e) { box.innerHTML = `<div class="err">${esc(errText(e))}</div>`; }
+}
+
 // ---------- الإعدادات: أقسام العمليات ----------
 function tabOpTheaters(body) {
   let rows = opTheaters().map((t) => ({ ...t, beds: t.beds.map((b) => ({ ...b })) }));
-  let ck = opChecklist().join("\n");
   const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   const draw = () => {
     body.innerHTML = `
@@ -6217,12 +6526,10 @@ function tabOpTheaters(body) {
       <div class="field"><span>الأسرّة / الغرف</span>${t.beds.map((b, j) => `<div class="row-inline"><input data-bn="${i}|${j}" value="${esc(b.name)}"><button class="linkbtn del" data-brm="${i}|${j}">حذف</button></div>`).join("")}
         <button class="linkbtn" data-badd="${i}">+ إضافة سرير أو غرفة</button></div>
     </section>`).join("")}
-    <section class="panel"><header><h2>بنود التشيك ليست قبل العملية</h2></header>
-      <label class="field"><span>كل بند في سطر</span><textarea id="otCk" rows="8">${esc(ck)}</textarea></label></section>
+    <p class="hint">قوائم المستهلكات والأجهزة والتشيك ليست في صفحة العمليات > <a href="#/opslists">المستهلكات والأجهزة</a> (الأدمن ومدير العمليات).</p>
     <div class="actions"><button class="btn" id="otSave">حفظ</button></div>`;
     body.querySelectorAll("[data-tn]").forEach((x) => (x.oninput = () => { rows[+x.dataset.tn].name = x.value; }));
     body.querySelectorAll("[data-bn]").forEach((x) => (x.oninput = () => { const [i, j] = x.dataset.bn.split("|").map(Number); rows[i].beds[j].name = x.value; }));
-    body.querySelector("#otCk").oninput = (e) => { ck = e.target.value; };
     body.querySelectorAll("[data-badd]").forEach((x) => (x.onclick = () => { const t = rows[+x.dataset.badd]; t.beds.push({ id: uid("b"), name: `سرير ${t.beds.length + 1}` }); draw(); }));
     body.querySelectorAll("[data-brm]").forEach((x) => (x.onclick = () => { const [i, j] = x.dataset.brm.split("|").map(Number); rows[i].beds.splice(j, 1); draw(); }));
     body.querySelectorAll("[data-trm]").forEach((x) => (x.onclick = () => { if (confirm("حذف القسم ده؟ العمليات المحجوزة عليه هتظهر من غير قسم.")) { rows.splice(+x.dataset.trm, 1); draw(); } }));
@@ -6231,10 +6538,66 @@ function tabOpTheaters(body) {
       const clean = rows.map((t) => ({ id: t.id, name: t.name.trim(), beds: t.beds.map((b) => ({ id: b.id, name: b.name.trim() })).filter((b) => b.name) }));
       if (clean.some((t) => !t.name)) { toast("اكتب اسم كل قسم", true); return; }
       if (clean.some((t) => !t.beds.length)) { toast("كل قسم لازم يبقى فيه سرير أو غرفة واحدة على الأقل", true); return; }
-      const list = ck.split("\n").map((x) => x.trim()).filter(Boolean);
-      try { await updateDoc(doc(db, "config", "settings"), { opTheaters: clean, opChecklist: list }); toast("تم حفظ أقسام العمليات"); }
+      try { await updateDoc(doc(db, "config", "settings"), { opTheaters: clean }); toast("تم حفظ أقسام العمليات"); }
       catch (e) { toast(errText(e), true); }
     };
   };
   draw();
+}
+
+/* =========================================================
+   أقسام المستشفى الكبيرة
+   - داخلي المستشفى (زيتي): الرعايات، والداخلي بأقسامه، والعمليات
+   - خارجي المستشفى (أزرق لبني): الطوارئ، والمعمل، والأشعة، والعيادات، والكلى الصناعي
+   - الأقسام الإدارية (أخضر)
+   الخارجي والإداري لسه تحت التطوير، وكل قسم هيتبني لوحده
+   ========================================================= */
+const AREAS = {
+  in: { name: "داخلي المستشفى", desc: "الرعايات المركزة، والداخلي بأقسامه، والعمليات" },
+  out: { name: "خارجي المستشفى", desc: "الطوارئ، والمعمل، والأشعة، والعيادات، والكلى الصناعي" },
+  adm: { name: "الأقسام الإدارية", desc: "الأقسام الإدارية للمستشفى" },
+};
+const OUT_DEPTS = [["er", "الطوارئ"], ["lab", "المعمل"], ["rad", "الأشعة"], ["clinics", "العيادات"], ["dialysis", "الكلى الصناعي"]];
+const areaOfPage = (p) => (p === "portal" ? "portal" : String(p || "").startsWith("out") ? "out" : String(p || "").startsWith("adm") ? "adm" : "in");
+
+function renderPortal() {
+  S.page = "portal";
+  const icu = Object.values(S.adm || {}).flat().filter(Boolean);
+  const icuBeds = units().reduce((s, u) => s + (Number(u.beds) || 0), 0);
+  const ward = S.wardActive || [];
+  const wardBedsN = (S.settings.wardUnits || []).reduce((s, u) => s + (typeof wardBeds === "function" ? wardBeds(u).length : Number(u.beds) || 0), 0);
+  const today = isoDay(new Date());
+  const opsToday = (S.opsUpcoming || []).filter((o) => o.proposedAt && isoDay(toDate(o.proposedAt)) === today).length;
+  const stat = (n, l) => `<div class="pa-stat"><strong>${n}</strong><span>${l}</span></div>`;
+  shell(`
+  <div class="portal">
+    <a class="pa-card pa-in" href="#/in">
+      <div class="pa-top"><h2>${AREAS.in.name}</h2><span class="pa-go">دخول ←</span></div>
+      <p>${AREAS.in.desc}</p>
+      <div class="pa-stats">${stat(`${icu.length}<small>/${icuBeds}</small>`, "الرعايات")}${stat(`${ward.length}<small>/${wardBedsN}</small>`, "الداخلي")}${stat(opsToday, "عمليات النهارده")}</div>
+      <div class="pa-chips"><span>الرعايات المركزة</span><span>الداخلي بأقسامه</span><span>العمليات</span><span>التمريض</span><span>الصيدلية</span></div>
+    </a>
+    <div class="pa-card pa-out">
+      <div class="pa-top"><h2>${AREAS.out.name}</h2><span class="pa-soon">تحت التطوير</span></div>
+      <p>${AREAS.out.desc}</p>
+      <div class="pa-chips">${OUT_DEPTS.map(([k, l]) => `<a href="#/out/${k}">${l}</a>`).join("")}</div>
+    </div>
+    <div class="pa-card pa-adm">
+      <div class="pa-top"><h2>${AREAS.adm.name}</h2><span class="pa-soon">تحت التطوير</span></div>
+      <p>هتتبني لوحدها، وكل قسم إداري هيبقى ليه صفحته وصلاحياته.</p>
+      <div class="pa-chips"><a href="#/adm">فتح</a></div>
+    </div>
+  </div>`);
+}
+
+function renderOutArea(sub) {
+  S.page = "out";
+  const d = OUT_DEPTS.find(([k]) => k === sub);
+  shell(d ? `<div class="soon-box area-out-box"><h2>${d[1]}</h2><p>قسم ${d[1]} تبع ${AREAS.out.name}، ولسه تحت التطوير.</p><p class="muted">هنحدد مع بعض شاشاته وصلاحياته لما نبدأ نبنيه.</p><a class="btn ghost" href="#/out">رجوع لخارجي المستشفى</a></div>`
+    : `<div class="toolbar"><h2>${AREAS.out.name}</h2></div>
+    <div class="out-grid">${OUT_DEPTS.map(([k, l]) => `<a class="out-tile" href="#/out/${k}"><strong>${l}</strong><span>تحت التطوير</span></a>`).join("")}</div>`);
+}
+function renderAdmArea() {
+  S.page = "adm";
+  shell(`<div class="soon-box area-adm-box"><h2>${AREAS.adm.name}</h2><p>الأقسام الإدارية لسه تحت التطوير، وهتتبني لوحدها.</p><a class="btn ghost" href="#/">رجوع لأقسام المستشفى</a></div>`);
 }
