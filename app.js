@@ -278,7 +278,7 @@ function route() {
   const page = parts[0] || "";
   if (isDept() && !["", "home", "dept", "patient", "w", "consults"].includes(page)) { location.hash = "#/"; return; }
   if (isClerk() && !["", "home", "patients"].includes(page)) { location.hash = "#/"; return; }
-  if (isNurseRole() && !["", "home", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "o"].includes(page)) { location.hash = "#/"; return; }
+  if (isNurseRole() && !["", "home", "nursing", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "o"].includes(page)) { location.hash = "#/"; return; }
   const newKey = location.hash;
   // لو نفس الصفحة ومفيش غير تحديث بيانات، متعيدش فتح المستمعين
   if (S._lastHash === newKey && S.page && S.page !== "login" && S.page !== "setup") {
@@ -289,6 +289,8 @@ function route() {
   cleanupPage();
 
   if ((page === "" || page === "home") && isNurseRole()) {
+    S.page = "nurse"; renderNurseHome();
+  } else if (page === "nursing" && (canSee("icu") || canSee("ward"))) {
     S.page = "nurse"; renderNurseHome();
   } else if ((page === "" || page === "home") && isClerk()) {
     S.page = "clerk"; renderClerkHome();
@@ -355,8 +357,9 @@ function shell(inner) {
       <span><strong>${esc(s.hospitalName)}</strong><small>نظام المستشفى</small></span>
     </a>
     <nav class="nav">
-      <a href="#/" class="${["home", "dept", "clerk", "nurse"].includes(S.page) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
+      <a href="#/" class="${(["home", "dept", "clerk"].includes(S.page) || (S.page === "nurse" && isNurseRole())) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
       ${isDept() || isNurseRole() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
+      ${!isNurseRole() && (canSee("icu") || canSee("ward")) ? `<a href="#/nursing" class="${S.page === "nurse" ? "on" : ""}">التمريض</a>` : ""}
       ${canSee("icu") ? `<a href="#/icu" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
       ${canSee("ward") ? `<a href="#/ward" class="${["ward", "wadm"].includes(S.page) ? "on" : ""}">الداخلي</a>` : ""}
       ${canSee("ops") ? `<a href="#/ops" class="${["ops", "op"].includes(S.page) ? "on" : ""}">العمليات</a>` : ""}
@@ -1881,17 +1884,17 @@ function openUserDialog(u, done) {
   </form>`);
   const f = document.getElementById("userForm");
   const sync = () => {
-    f.querySelectorAll(".doc-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "doctor"));
-    f.querySelectorAll(".dept-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "dept"));
-    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse"].includes(f.role.value)));
-    f.querySelectorAll(".nurse-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "nurse"));
-    f.querySelectorAll(".clerk-only").forEach((el) => el.classList.toggle("hidden", f.role.value !== "clerk"));
-    if (f.role.value === "doctor") {
+    f.querySelectorAll(".doc-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "doctor"));
+    f.querySelectorAll(".dept-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "dept"));
+    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse"].includes(f.elements.role.value)));
+    f.querySelectorAll(".nurse-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "nurse"));
+    f.querySelectorAll(".clerk-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "clerk"));
+    if (f.elements.role.value === "doctor") {
       document.getElementById("icuUnits").classList.toggle("hidden", f.querySelector('input[name="sec_icu"]:checked').value === "none");
       document.getElementById("wardDeptsBox").classList.toggle("hidden", f.querySelector('input[name="sec_ward"]:checked').value === "none");
     }
   };
-  f.role.onchange = sync;
+  f.elements.role.onchange = sync;
   f.querySelectorAll('input[name="sec_icu"], input[name="sec_ward"]').forEach((r) => (r.onchange = sync));
   sync();
 
@@ -1899,23 +1902,23 @@ function openUserDialog(u, done) {
     ev.preventDefault();
     const err = document.getElementById("userErr");
     err.textContent = "";
-    const role = self ? "admin" : f.role.value;
+    const role = self ? "admin" : f.elements.role.value;
     const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse"].includes(role) ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
     const isN = role === "nurse";
     const nUnits = isN ? checkedValues(f, "nunits") : [], nWards = isN ? checkedValues(f, "nwards") : [];
     if (isN) Object.assign(sections, { icu: nUnits.length ? "nurse" : "none", ward: nWards.length ? "nurse" : "none", ops: f.elements.nOps.checked ? "read" : "none", reports: "none" });
     const data = {
-      displayName: f.displayName.value.trim(), role, sections,
+      displayName: f.elements.displayName.value.trim(), role, sections,
       access: ["none", "nurse"].includes(sections.icu) ? "read" : sections.icu,
       units: isN ? nUnits : role === "admin" || sections.icu === "none" ? [] : checkedValues(f, "units"),
       wardDepts: isN ? nWards : role === "doctor" && sections.ward !== "none" ? checkedValues(f, "wdepts") : [],
       nurseVitals: isN ? f.elements.nVitals.checked : false,
-      print: role === "admin" ? true : ["dept", "clerk", "nurse"].includes(role) ? false : f.print.checked,
+      print: role === "admin" ? true : ["dept", "clerk", "nurse"].includes(role) ? false : f.elements.print.checked,
       clerkSections: role === "clerk" ? checkedValues(f, "clerkSec") : [],
       shared: role === "dept" ? f.elements.sharedAcc.checked : isN ? f.elements.nShared.checked : false,
-      specialties: role === "dept" ? [f.deptSpecialty.value].filter(Boolean) : checkedValues(f, "uspecs").slice(0, 10),
-      deptSpecialty: role === "dept" ? f.deptSpecialty.value : "",
-      editWindowHours: Number(f.editWindowHours.value),
+      specialties: role === "dept" ? [f.elements.deptSpecialty.value].filter(Boolean) : checkedValues(f, "uspecs").slice(0, 10),
+      deptSpecialty: role === "dept" ? f.elements.deptSpecialty.value : "",
+      editWindowHours: Number(f.elements.editWindowHours.value),
     };
     if (!data.displayName) { err.textContent = "اكتب اسم المستخدم الظاهر."; return; }
     if (role === "dept" && !data.deptSpecialty) { err.textContent = "اختر القسم."; return; }
@@ -1927,16 +1930,16 @@ function openUserDialog(u, done) {
     const btn = f.querySelector("button.btn"); btn.disabled = true;
     try {
       if (isNew) {
-        const username = f.username.value.trim().toLowerCase();
+        const username = f.elements.username.value.trim().toLowerCase();
         if (!/^[a-z0-9._-]{3,30}$/.test(username)) throw { message: "اسم المستخدم لازم يكون حروف إنجليزي وأرقام فقط (3 حروف على الأقل)." };
-        if (f.password.value.length < 6) throw { code: "auth/weak-password" };
+        if (f.elements.password.value.length < 6) throw { code: "auth/weak-password" };
         const sa = secondaryAuth();
-        const cred = await createUserWithEmailAndPassword(sa, `${username}@${USER_EMAIL_DOMAIN}`, f.password.value);
+        const cred = await createUserWithEmailAndPassword(sa, `${username}@${USER_EMAIL_DOMAIN}`, f.elements.password.value);
         await setDoc(doc(db, "users", cred.user.uid), { ...data, username, active: true, createdAt: serverTimestamp(), createdBy: S.profile.uid });
         await signOut(sa);
         toast(`تمت إضافة ${data.displayName}`);
       } else {
-        data.active = self ? true : f.active.checked;
+        data.active = self ? true : f.elements.active.checked;
         data.updatedAt = serverTimestamp();
         await updateDoc(doc(db, "users", u.uid), data);
         toast("تم حفظ التعديل");
@@ -5380,7 +5383,13 @@ function textOn(hex) {
 }
 
 /* ---------- قسم الداخلي لكل مستخدم ---------- */
-const isNurseRole = () => S.profile?.role === "nurse";
+const isNurseRole = () => {
+  const p = S.profile;
+  if (!p) return false;
+  if (p.role === "nurse") return true;
+  const sec = p.sections || {};
+  return p.role === "doctor" && (sec.icu === "nurse" || sec.ward === "nurse") && !["icu", "ward", "ops", "reports"].some((k) => sec[k] === "write");
+};
 const wardDeptOk = (id) => isAdmin() || !Array.isArray(S.profile?.wardDepts) || S.profile.wardDepts.includes(id);
 const visibleWardUnits = () => (isAdmin() ? wardUnits() : canSee("ward") ? wardUnits().filter((u) => wardDeptOk(u.id)) : []);
 const canWriteWardDept = (id) => isAdmin() || (canEdit("ward") && wardDeptOk(id));
