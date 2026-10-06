@@ -278,6 +278,7 @@ function route() {
   const page = parts[0] || "";
   if (isDept() && !["", "home", "dept", "patient", "w", "consults"].includes(page)) { location.hash = "#/"; return; }
   if (isClerk() && !["", "home", "patients"].includes(page)) { location.hash = "#/"; return; }
+  if (isPharm() && !["", "home", "pharmacy"].includes(page)) { location.hash = "#/"; return; }
   if (isNurseRole() && !["", "home", "nursing", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "o"].includes(page)) { location.hash = "#/"; return; }
   const newKey = location.hash;
   // لو نفس الصفحة ومفيش غير تحديث بيانات، متعيدش فتح المستمعين
@@ -288,7 +289,11 @@ function route() {
   S._lastHash = newKey;
   cleanupPage();
 
-  if ((page === "" || page === "home") && isNurseRole()) {
+  if ((page === "" || page === "home" || page === "pharmacy") && isPharm()) {
+    renderPharmacy();
+  } else if (page === "pharmacy" && isAdmin()) {
+    renderPharmacy();
+  } else if ((page === "" || page === "home") && isNurseRole()) {
     S.page = "nurse"; renderNurseHome();
   } else if (page === "nursing" && (canSee("icu") || canSee("ward"))) {
     S.page = "nurse"; renderNurseHome();
@@ -357,14 +362,15 @@ function shell(inner) {
       <span><strong>${esc(s.hospitalName)}</strong><small>نظام المستشفى</small></span>
     </a>
     <nav class="nav">
-      <a href="#/" class="${(["home", "dept", "clerk"].includes(S.page) || (S.page === "nurse" && isNurseRole())) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
-      ${isDept() || isNurseRole() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
+      <a href="#/" class="${(["home", "dept", "clerk"].includes(S.page) || (S.page === "nurse" && isNurseRole()) || (S.page === "pharmacy" && isPharm())) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
+      ${isDept() || isNurseRole() || isPharm() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
       ${!isNurseRole() && (canSee("icu") || canSee("ward")) ? `<a href="#/nursing" class="${S.page === "nurse" ? "on" : ""}">التمريض</a>` : ""}
       ${canSee("icu") ? `<a href="#/icu" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
       ${canSee("ward") ? `<a href="#/ward" class="${["ward", "wadm"].includes(S.page) ? "on" : ""}">الداخلي</a>` : ""}
       ${canSee("ops") ? `<a href="#/ops" class="${["ops", "op"].includes(S.page) ? "on" : ""}">العمليات</a>` : ""}
       ${canSee("reports") ? `<a href="#/reports" class="${["reports", "report"].includes(S.page) ? "on" : ""}">التقارير الطبية</a>` : ""}
       ${isAdmin() ? `<a href="#/dept" class="${S.page === "dept" ? "on" : ""}">الأقسام</a>` : ""}
+      ${isAdmin() ? `<a href="#/pharmacy" class="${S.page === "pharmacy" ? "on" : ""}">الصيدلية</a>` : ""}
       ${canSee("icu") || canSee("ward") ? `<a href="#/handover" class="${S.page === "handover" ? "on" : ""}">تسليم الشيفت</a>` : ""}
       ${isAdmin() || mySpecs().length || canEditAny() ? `<a href="#/consults" class="${S.page === "consults" ? "on" : ""}">الاستشارات${(S.consultIn || []).length ? ` <b class="nb">${S.consultIn.length}</b>` : ""}</a>` : ""}
       ${isAdmin() ? `<a href="#/archive" class="${S.page === "archive" ? "on" : ""}">الأرشيف</a>
@@ -993,7 +999,7 @@ function formDialog(title, fieldsHtml, submitLabel, onSave, onDelete) {
 function renderPatient(aid) {
   shell(`<div class="loading">جاري تحميل ملف المريض…</div>`);
   const prevTab = S.P?.aid === aid ? S.P.tab : "info";
-  const P = (S.P = { aid, adm: null, pat: null, entries: [], vitals: [], meds: [], mar: [], tab: prevTab, showHist: false, scroll: {}, subs: false });
+  const P = (S.P = { aid, adm: null, pat: null, entries: [], vitals: [], meds: [], mar: [], ph: [], tab: prevTab, showHist: false, scroll: {}, subs: false });
   const draw = () => { if (S.P === P && S.page === "patient" && P.adm && P.pat) drawPatient(); };
   S.pageUnsubs.push(onSnapshot(doc(db, "admissions", aid), (snap) => {
     if (!snap.exists()) { shell(`<div class="empty">الملف غير موجود. <a href="#/">ارجع للأسرّة</a></div>`); return; }
@@ -1004,6 +1010,9 @@ function renderPatient(aid) {
       if (!isDept()) S.pageUnsubs.push(onSnapshot(doc(db, "patients", P.adm.patientId), (ps) => { P.pat = ps.data() || {}; draw(); }));
       S.pageUnsubs.push(onSnapshot(consultsQ(aid), (s) => {
         P.creqs = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw();
+      }, () => {}));
+      if (!isClerk()) S.pageUnsubs.push(onSnapshot(query(collection(db, "pharmacy"), where("parentId", "==", aid)), (s) => {
+        P.ph = s.docs.map((d) => d.data()); draw();
       }, () => {}));
       for (const k of ["entries", "vitals", "meds", "mar"]) {
         S.pageUnsubs.push(onSnapshot(collection(db, "admissions", aid, k), (s) => {
@@ -1572,7 +1581,8 @@ function ptMeds() {
     const changed = d.from === day && day !== m.startDate;
     const dn = m.duration ? `<em>${medDayNo(m, day)}/${m.duration}</em>` : "";
     const mc = marCount(m, day);
-    return `<td class="c-on ${changed ? "c-chg" : ""} ${end === day ? "c-last" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small>${dn}${mc ? `<em class="given">✓ ${mc}</em>` : ""}</td>`;
+    const ph = phFind(P.ph, m.id, day);
+    return `<td class="c-on ${changed ? "c-chg" : ""} ${end === day ? "c-last" : ""} ${ph?.available === false ? "c-na" : ""}">${esc(d.dose)}<small>${esc(d.frequency)}</small>${dn}${mc ? `<em class="given">✓ ${mc}</em>` : ""}${phBadge(ph)}</td>`;
   };
   const marCount = (m, day) => (P.mar || []).filter((e) => e.medId === m.id && isoDay(toDate(e.givenAt)) === day).length;
   const canGive = pCanNurse();
@@ -1597,9 +1607,11 @@ function ptMeds() {
         : medEnded(m) ? `انتهت المدة (${m.duration} يوم) في ${fmtDate(medEnd(m))}`
         : m.duration ? `اليوم ${medDayNo(m, today)} من ${m.duration}، ينتهي ${fmtDate(medEnd(m))}`
         : `مستمر من ${fmtDate(m.startDate)}، اليوم ${medDayNo(m, today)}`;
-      return `<tr class="${off(m) ? "stopped" : ""}">
+      const phL = phLatest(P.ph, m.id), phNa = !off(m) && phL?.available === false;
+      return `<tr class="${off(m) ? "stopped" : ""} ${phNa ? "ph-red" : ""}">
         <th class="stick med-h">
           <strong class="ltr-auto">${esc(m.name)}</strong>
+          ${phNa ? `<span class="ph-note">غير متاح بالصيدلية (${fmtDayShort(phL.day)})${phL.comment ? `: ${esc(phL.comment)}` : ""}</span>` : ""}
           <span>${esc(m.route)}${cd.frequency ? `، ${esc(cd.frequency)}` : ""}</span>
           <span class="status">${status}</span>
           ${m.note ? `<span class="muted">${esc(m.note)}</span>` : ""}
@@ -1817,7 +1829,7 @@ async function tabUsers(body) {
   <div class="table-wrap"><table>
     <thead><tr><th>الاسم</th><th>اسم المستخدم</th>${Object.values(SECTIONS).map((l) => `<th>${l}</th>`).join("")}<th>طباعة</th><th>فترة التعديل</th><th>الحالة</th><th></th></tr></thead>
     <tbody>${list.map((u) => `<tr>
-      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clerk" ? ` <span class="pill">إداري</span>` : u.role === "nurse" ? ` <span class="pill">تمريض${u.shared ? " (مشترك)" : ""}</span>` : ""}</td>
+      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clerk" ? ` <span class="pill">إداري</span>` : u.role === "nurse" ? ` <span class="pill">تمريض${u.shared ? " (مشترك)" : ""}</span>` : u.role === "pharmacy" ? ` <span class="pill">صيدلية${u.shared ? " (مشترك)" : ""}</span>` : ""}</td>
       <td class="ltr">${esc(u.username)}</td>
       ${Object.keys(SECTIONS).map((k) => `<td>${u.role === "admin" ? "كاملة" : `${levelLabel(secOf(u, k))}${k === "icu" && secOf(u, k) !== "none" ? `<div class="by-line">${esc(unitNames(u.units)) || "بدون وحدات"}</div>` : ""}${k === "ward" && secOf(u, k) !== "none" ? `<div class="by-line">${Array.isArray(u.wardDepts) ? esc(u.wardDepts.map((id) => wardById(id)?.name).filter(Boolean).join("، ")) || "بدون أقسام" : "كل الأقسام"}</div>` : ""}`}</td>`).join("")}
       <td>${u.role === "admin" || u.print ? "نعم" : "—"}</td>
@@ -1847,7 +1859,7 @@ function openUserDialog(u, done) {
     </div>` : ""}
     <div class="row2">
       <label class="field"><span>نوع الحساب</span>
-        <select name="role" ${self ? "disabled" : ""}><option value="doctor" ${!["admin", "dept", "clerk", "nurse"].includes(u.role) ? "selected" : ""}>مستخدم</option><option value="dept" ${u.role === "dept" ? "selected" : ""}>حساب قسم</option><option value="clerk" ${u.role === "clerk" ? "selected" : ""}>حساب إداري (تسجيل بيانات الدخول فقط)</option><option value="nurse" ${u.role === "nurse" ? "selected" : ""}>حساب تمريض</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>أدمن</option></select></label>
+        <select name="role" ${self ? "disabled" : ""}><option value="doctor" ${!["admin", "dept", "clerk", "nurse", "pharmacy"].includes(u.role) ? "selected" : ""}>مستخدم</option><option value="dept" ${u.role === "dept" ? "selected" : ""}>حساب قسم</option><option value="clerk" ${u.role === "clerk" ? "selected" : ""}>حساب إداري (تسجيل بيانات الدخول فقط)</option><option value="nurse" ${u.role === "nurse" ? "selected" : ""}>حساب تمريض</option><option value="pharmacy" ${u.role === "pharmacy" ? "selected" : ""}>حساب صيدلية</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>أدمن</option></select></label>
       <label class="field"><span>فترة التعديل في الرعاية</span>
         <select name="editWindowHours"><option value="12" ${u.editWindowHours !== 24 ? "selected" : ""}>12 ساعة (الشيفت الحالي)</option><option value="24" ${u.editWindowHours === 24 ? "selected" : ""}>24 ساعة (الشيفت الحالي واللي قبله)</option></select></label>
     </div>
@@ -1868,6 +1880,8 @@ function openUserDialog(u, done) {
       <label><input type="checkbox" name="nVitals" ${u.nurseVitals ? "checked" : ""}> يسجّل العلامات الحيوية (في الرعاية)</label>
       <label><input type="checkbox" name="nShared" ${u.shared && u.role === "nurse" ? "checked" : ""}> حساب مشترك (بيسأل عن اسم الممرض)</label></div>
     <p class="hint nurse-only">التمريض بيشوف حالات وحداته وأقسامه بس، ويكتب ملاحظات التمريض، ويسجّل إعطاء الأدوية بالوقت واسم اللي أعطى. مبيقدرش يعدّل العلاج أو الجرعة أو المدة.</p>
+    <div class="checks pharm-only"><label><input type="checkbox" name="pShared" ${u.shared && u.role === "pharmacy" ? "checked" : ""}> حساب مشترك (بيسأل عن اسم الصيدلي كل مرة)</label></div>
+    <p class="hint pharm-only">الصيدلي بيشوف صفحة طلبات الأدوية اليومية بس (اسم المريض والقسم والدواء والجرعة)، ويعلّم متوفر أو غير متاح والكمية وتم الصرف، ويكتب البدائل. مبيشوفش ملف المريض.</p>
     <div class="checks doc-only"><label><input type="checkbox" name="print" ${u.print ? "checked" : ""}> صلاحية الطباعة و PDF</label></div>
     <label class="field dept-only"><span>القسم</span><select name="deptSpecialty">${optionsHtml(S.settings.specialties || [], u.deptSpecialty || "")}</select>
       <span class="hint">المستخدم ده بيشوف حالات القسم والإشراف المشترك والعروض بتاعته بس، وبيرد على العروض ويكتب رأيه في الإشراف المشترك. ملوش دخول على أي قسم تاني.</span></label>
@@ -1886,7 +1900,8 @@ function openUserDialog(u, done) {
   const sync = () => {
     f.querySelectorAll(".doc-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "doctor"));
     f.querySelectorAll(".dept-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "dept"));
-    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse"].includes(f.elements.role.value)));
+    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse", "pharmacy"].includes(f.elements.role.value)));
+    f.querySelectorAll(".pharm-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "pharmacy"));
     f.querySelectorAll(".nurse-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "nurse"));
     f.querySelectorAll(".clerk-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "clerk"));
     if (f.elements.role.value === "doctor") {
@@ -1903,7 +1918,7 @@ function openUserDialog(u, done) {
     const err = document.getElementById("userErr");
     err.textContent = "";
     const role = self ? "admin" : f.elements.role.value;
-    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse"].includes(role) ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
+    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse", "pharmacy"].includes(role) ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
     const isN = role === "nurse";
     const nUnits = isN ? checkedValues(f, "nunits") : [], nWards = isN ? checkedValues(f, "nwards") : [];
     if (isN) Object.assign(sections, { icu: nUnits.length ? "nurse" : "none", ward: nWards.length ? "nurse" : "none", ops: f.elements.nOps.checked ? "read" : "none", reports: "none" });
@@ -1913,10 +1928,10 @@ function openUserDialog(u, done) {
       units: isN ? nUnits : role === "admin" || sections.icu === "none" ? [] : checkedValues(f, "units"),
       wardDepts: isN ? nWards : role === "doctor" && sections.ward !== "none" ? checkedValues(f, "wdepts") : [],
       nurseVitals: isN ? f.elements.nVitals.checked : false,
-      print: role === "admin" ? true : ["dept", "clerk", "nurse"].includes(role) ? false : f.elements.print.checked,
+      print: role === "admin" ? true : ["dept", "clerk", "nurse", "pharmacy"].includes(role) ? false : f.elements.print.checked,
       clerkSections: role === "clerk" ? checkedValues(f, "clerkSec") : [],
-      shared: role === "dept" ? f.elements.sharedAcc.checked : isN ? f.elements.nShared.checked : false,
-      specialties: role === "dept" ? [f.elements.deptSpecialty.value].filter(Boolean) : checkedValues(f, "uspecs").slice(0, 10),
+      shared: role === "dept" ? f.elements.sharedAcc.checked : isN ? f.elements.nShared.checked : role === "pharmacy" ? f.elements.pShared.checked : false,
+      specialties: role === "dept" ? [f.elements.deptSpecialty.value].filter(Boolean) : role === "pharmacy" ? [] : checkedValues(f, "uspecs").slice(0, 10),
       deptSpecialty: role === "dept" ? f.elements.deptSpecialty.value : "",
       editWindowHours: Number(f.elements.editWindowHours.value),
     };
@@ -3327,7 +3342,7 @@ async function createWardAdmission(p, dept, bed, at, d) {
 /* ---------- صفحة دخول الداخلي ---------- */
 function renderWardAdmission(id) {
   shell(`<div class="loading">جاري التحميل…</div>`);
-  const W = (S.W = { id, a: null, meds: [], p: null, notes: [], creqs: [], ops: [] });
+  const W = (S.W = { id, a: null, meds: [], p: null, notes: [], creqs: [], ops: [], ph: [] });
   const draw = () => { if (S.W === W && S.page === "wadm" && W.a) drawWardAdmission(); };
   S.pageUnsubs.push(onSnapshot(doc(db, "wardAdmissions", id), (s) => {
     if (!s.exists()) { shell(`<div class="empty">الملف غير موجود.</div>`); return; }
@@ -3341,12 +3356,13 @@ function renderWardAdmission(id) {
   S.pageUnsubs.push(onSnapshot(collection(db, "wardAdmissions", id, "opinions"), (s) => { W.ops = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(collection(db, "wardAdmissions", id, "notes"), (s) => { W.notes = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(consultsQ(id), (s) => { W.creqs = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
+  if (!isClerk()) S.pageUnsubs.push(onSnapshot(query(collection(db, "pharmacy"), where("parentId", "==", id)), (s) => { W.ph = s.docs.map((d) => d.data()); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(collection(db, "wardAdmissions", id, "medlog"), (s) => {
     W.meds = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw();
   }, () => {}));
 }
 
-function medlogHtml(meds, canW, canGive = canW) {
+function medlogHtml(meds, canW, canGive = canW, ph = []) {
   const rows = [...meds].sort((x, y) => toDate(y.createdAt || y.at) - toDate(x.createdAt || x.at));
   return `
   ${canW ? `<form class="med-add" data-medadd>
@@ -3355,9 +3371,10 @@ function medlogHtml(meds, canW, canGive = canW) {
     <button class="btn sm">إضافة</button></form>
     <datalist id="dlDrugs2">${(S.settings.drugs || []).map((x) => `<option value="${esc(x)}">`).join("")}</datalist>` : ""}
   ${rows.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>الدواء</th><th>الجرعة</th><th>الموعد</th><th>الحالة</th><th></th></tr></thead>
-    <tbody>${rows.map((m) => `<tr><td class="ltr"><strong>${esc(m.drug)}</strong></td><td class="ltr">${esc(m.dose)}</td><td class="ltr">${esc(m.schedule)}</td>
+    <thead><tr><th>الدواء</th><th>الجرعة</th><th>الموعد</th><th>الحالة</th><th>الصيدلية</th><th></th></tr></thead>
+    <tbody>${rows.map((m) => `<tr class="${phFind(ph, m.id)?.available === false ? "ph-red" : ""}"><td class="ltr"><strong>${esc(m.drug)}</strong></td><td class="ltr">${esc(m.dose)}</td><td class="ltr">${esc(m.schedule)}</td>
       <td>${m.given ? `<span class="dis">تم</span> <span class="by-line">${fmtDateTime(m.givenAt)}، ${esc(m.givenByName || "")}</span>` : `<span class="wait">لم يُعطَ</span>`}</td>
+      <td>${phBadge(phFind(ph, m.id)) || `<span class="muted">—</span>`}</td>
       <td>${canGive && !m.given ? `<button class="btn ghost sm" data-given="${m.id}">تم الإعطاء</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
     : `<p class="muted">لا يوجد أدوية مسجلة.</p>`}`;
 }
@@ -3427,7 +3444,7 @@ function drawWardAdmission() {
       <dl class="kv"><dt>التشخيص</dt><dd>${txt(a.diagnosis)}</dd><dt>التاريخ المرضي</dt><dd>${txt(a.history)}</dd></dl></section>` : ""}
   <section class="panel stack-gap"><header><h2>الطلبات</h2></header>
     <dl class="kv"><dt>أشعات مطلوبة</dt><dd>${txt(a.xrays)}</dd><dt>تحاليل مطلوبة</dt><dd>${txt(a.labs)}</dd><dt>عروض مطلوبة</dt><dd>${txt(a.requests)}</dd></dl></section>
-  <section class="panel stack-gap" id="wMeds"><header><h2>سجل الأدوية</h2></header>${medlogHtml(meds, canW && active, active && canNurseWardDept(a.deptId))}</section>
+  <section class="panel stack-gap" id="wMeds"><header><h2>سجل الأدوية</h2></header>${medlogHtml(meds, canW && active, active && canNurseWardDept(a.deptId), S.W.ph)}</section>
   ${wardOpinionsHtml(S.W.ops || [], active && (canWriteWardDept(a.deptId) || deptCanOpinion(a)))}
   ${wardNotesHtml(S.W.notes || [], active && canNurseWardDept(a.deptId))}
   <section class="panel stack-gap" id="wCreqs"><header><h2>طلبات الاستشارة</h2>${active && canWriteWardDept(a.deptId) ? `<button class="btn ghost sm" data-w="consultReq">طلب استشارة</button>` : ""}</header>
@@ -3636,12 +3653,13 @@ function openOperation(o, p) {
 
 function renderOperation(id) {
   shell(`<div class="loading">جاري التحميل…</div>`);
-  const O = (S.OP = { id, o: null, meds: [] });
+  const O = (S.OP = { id, o: null, meds: [], ph: [] });
   const draw = () => { if (S.OP === O && S.page === "op" && O.o) drawOperation(); };
   S.pageUnsubs.push(onSnapshot(doc(db, "operations", id), (s) => {
     if (!s.exists()) { shell(`<div class="empty">العملية غير موجودة.</div>`); return; }
     O.o = { id: s.id, ...s.data() }; draw();
   }, () => shell(`<div class="empty">ليس لديك صلاحية لعرض العمليات.</div>`)));
+  S.pageUnsubs.push(onSnapshot(query(collection(db, "pharmacy"), where("parentId", "==", id)), (s) => { O.ph = s.docs.map((d) => d.data()); draw(); }, () => {}));
   S.pageUnsubs.push(onSnapshot(collection(db, "operations", id, "medlog"), (s) => { O.meds = s.docs.map((d) => ({ id: d.id, ...d.data() })); draw(); }, () => {}));
 }
 
@@ -3673,7 +3691,7 @@ function drawOperation() {
       ${o.notes ? `<dt>ملاحظات</dt><dd>${esc(o.notes)}</dd>` : ""}
       ${o.cancelReason ? `<dt>سبب الإلغاء</dt><dd>${esc(o.cancelReason)}</dd>` : ""}
       <dt>سجّل الحجز</dt><dd>${esc(o.createdByName || "")}</dd></dl></section>
-    <section class="panel" id="oMeds"><header><h2>سجل أدوية العملية</h2></header>${medlogHtml(meds, canEdit("ops") && o.status !== "cancelled")}</section>
+    <section class="panel" id="oMeds"><header><h2>سجل أدوية العملية</h2></header>${medlogHtml(meds, canEdit("ops") && o.status !== "cancelled", undefined, S.OP.ph)}</section>
   </div>`);
   bindMedlog(document.getElementById("oMeds"), ["operations", o.id]);
   root.querySelector("main").onclick = (ev) => {
@@ -5097,7 +5115,7 @@ async function revokeConsultAccess(c) {
 
 // اسم الطبيب: الحساب الشخصي بياخد اسمه، والمشترك بيسأل عن الاسم
 function applyDeptDoctor() {
-  if (!isDept() && !isNurseRole()) return;
+  if (!isDept() && !isNurseRole() && !isPharm()) return;
   S.profile.baseName = S.profile.displayName;
   if (!S.profile.shared) { S.profile.doctorName = S.profile.displayName; return; }
   const d = sessionStorage.getItem("deptDoctor_" + S.profile.uid) || "";
@@ -5106,9 +5124,9 @@ function applyDeptDoctor() {
   if (!d) setTimeout(askDeptDoctor, 0);
 }
 function askDeptDoctor() {
-  if ((!isDept() && !isNurseRole()) || !S.profile.shared || dlg.open) return;
+  if ((!isDept() && !isNurseRole() && !isPharm()) || !S.profile.shared || dlg.open) return;
   openDialog(`<form class="form" id="ddF"><header class="dlg-head"><h3>مين بيستخدم الحساب؟</h3>
-      <p>${isNurseRole() ? "ده حساب تمريض مشترك" : `ده حساب مشترك لقسم ${esc(S.profile.deptSpecialty)}`}. اكتب اسمك عشان يتسجل مع أي حاجة تكتبها.</p></header>
+      <p>${isPharm() ? "ده حساب صيدلية مشترك" : isNurseRole() ? "ده حساب تمريض مشترك" : `ده حساب مشترك لقسم ${esc(S.profile.deptSpecialty)}`}. اكتب اسمك عشان يتسجل مع أي حاجة تكتبها.</p></header>
     <label class="field"><span>الاسم</span><input name="doc" required autofocus placeholder="د. …" value="${esc(S.profile.doctorName || "")}"></label>
     <div class="err" id="ddErr"></div><div class="actions"><button class="btn">متابعة</button></div></form>`);
   dlg.oncancel = (e) => { if (!S.profile.doctorName) e.preventDefault(); };
@@ -5649,4 +5667,247 @@ function drawNurseHome() {
     ${all.some((x) => stayDays(x.a) > 7) ? kpi(all.filter((x) => stayDays(x.a) > 7).length, "إقامة أكتر من 7 أيام", true) : ""}</div>
   ${icuUnits.map((u) => unitBlock("icu", u)).join("")}${wardUs.map((u) => unitBlock("ward", u)).join("")}`);
   document.getElementById("chNurse")?.addEventListener("click", () => { sessionStorage.removeItem("deptDoctor_" + S.profile.uid); S.profile.doctorName = ""; askDeptDoctor(); });
+}
+
+/* =========================================================
+   الصيدلية: طلب الأدوية اليومي
+   مصدر الطلب شيت الأدوية اللي بيكتبه الأطباء:
+   - الرعاية: كل دواء شغال في اليوم ده (من يوم البداية لحد الإيقاف أو نهاية المدة)
+   - الداخلي والعمليات: الأدوية اللي اتكتبت في اليوم ده
+   الصيدلي يعلّم متوفر / غير متاح + الكمية + تم الصرف، واسمه بيتسجل، ويكتب تعليق بالبدائل
+   ========================================================= */
+const isPharm = () => S.profile?.role === "pharmacy";
+const PH_SRC = { icu: "الرعاية", ward: "الداخلي", ops: "العمليات" };
+const phId = (day, src, parentId, medId) => `${day}_${src}_${parentId}_${medId}`;
+const phName = () => S.profile.doctorName || S.profile.displayName;
+const dayOfTs = (t) => (t ? isoDay(toDate(t)) : "");
+
+// حالة الصيدلية لدواء (بتظهر للأطباء في شيت الأدوية)
+function phBadge(r) {
+  if (!r) return "";
+  const cm = r.comment ? `<small>${esc(r.comment)}</small>` : "";
+  if (r.available === false) return `<em class="ph no" title="${esc(r.comment || "")}">لا يوجد · ${esc(r.byName || "")}${cm}</em>`;
+  if (r.dispensed) return `<em class="ph ok" title="${esc(fmtDateTime(r.dispensedAt))}">تم الصرف${r.qty ? ` (${esc(r.qty)})` : ""} · ${esc(r.dispensedByName || r.byName || "")}${cm}</em>`;
+  if (r.available) return `<em class="ph av">متوفر${cm}</em>`;
+  return cm ? `<em class="ph">${cm}</em>` : "";
+}
+const phFind = (list, medId, day) => (list || []).find((r) => r.medId === medId && (!day || r.day === day));
+const phLatest = (list, medId) => (list || []).filter((r) => r.medId === medId).sort((x, y) => y.day.localeCompare(x.day))[0];
+
+async function phLoad(day) {
+  const rows = [], errs = [];
+  const safe = async (label, fn) => { try { await fn(); } catch (e) { console.error("pharmacy", label, e); errs.push(label); } };
+  await safe("الرعاية", async () => {
+    const icu = await getDocs(query(collection(db, "admissions"), where("status", "==", "active")));
+    await Promise.all(icu.docs.map(async (ad) => {
+      const a = ad.data();
+      if (a.admitAt && isoDay(toDate(a.admitAt)) > day) return;
+      const u = unitById(a.unitId) || { name: a.unitId, bedLabel: "سرير" };
+      const ms = await getDocs(collection(db, "admissions", ad.id, "meds"));
+      ms.forEach((md) => {
+        const m = md.data(), end = medEnd(m);
+        if (!m.startDate || m.startDate > day || (m.stopDate && day >= m.stopDate) || (end && day > end)) return;
+        const d = sortedDoses(m).filter((x) => x.from <= day).pop() || {};
+        rows.push({ src: "icu", parentId: ad.id, medId: md.id, patientId: a.patientId || "", patientName: a.patientName || "", medicalId: a.medicalId || "",
+          place: u.name, placeKey: "icu:" + a.unitId, bed: `${u.bedLabel || "سرير"} ${a.bed}`, drug: m.name || "", dose: d.dose || "",
+          freq: [m.route, d.frequency].filter(Boolean).join("، "), note: m.note || "",
+          extra: m.duration ? `اليوم ${medDayNo(m, day)} من ${m.duration}` : `اليوم ${medDayNo(m, day)}`, href: `#/patient/${ad.id}` });
+      });
+    }));
+  });
+  await safe("الداخلي", async () => {
+    const wd = await getDocs(query(collection(db, "wardAdmissions"), where("status", "==", "active")));
+    await Promise.all(wd.docs.map(async (ad) => {
+      const a = ad.data();
+      const ms = await getDocs(collection(db, "wardAdmissions", ad.id, "medlog"));
+      ms.forEach((md) => {
+        const m = md.data();
+        if (dayOfTs(m.createdAt || m.at) !== day) return;
+        rows.push({ src: "ward", parentId: ad.id, medId: md.id, patientId: a.patientId || "", patientName: a.patientName || "", medicalId: a.medicalId || "",
+          place: wardById(a.deptId)?.name || "الداخلي", placeKey: "ward:" + (a.deptId || ""), bed: a.bed ? wardBedText(a.deptId, a.bed) : "",
+          drug: m.drug || "", dose: m.dose || "", freq: m.schedule || "", note: "", extra: m.createdByName ? `كتبه ${m.createdByName}` : "", href: `#/w/${ad.id}` });
+      });
+    }));
+  });
+  await safe("العمليات", async () => {
+    const from = new Date(day + "T00:00:00"); from.setDate(from.getDate() - 3);
+    const [sch, done] = await Promise.all([
+      getDocs(query(collection(db, "operations"), where("status", "==", "scheduled"))),
+      getDocs(query(collection(db, "operations"), where("doneAt", ">=", Timestamp.fromDate(from)))),
+    ]);
+    const ops = new Map();
+    [...sch.docs, ...done.docs].forEach((d) => { if (d.data().status !== "cancelled") ops.set(d.id, d); });
+    await Promise.all([...ops.values()].map(async (od) => {
+      const o = od.data();
+      const ms = await getDocs(collection(db, "operations", od.id, "medlog"));
+      ms.forEach((md) => {
+        const m = md.data();
+        if (dayOfTs(m.createdAt || m.at) !== day) return;
+        rows.push({ src: "ops", parentId: od.id, medId: md.id, patientId: o.patientId || "", patientName: o.patientName || "", medicalId: o.medicalId || "",
+          place: "العمليات", placeKey: "ops", bed: `${o.operation || ""}${o.proposedAt ? `، ${fmtDateTime(o.doneAt || o.proposedAt)}` : ""}`,
+          drug: m.drug || "", dose: m.dose || "", freq: m.schedule || "", note: "", extra: m.createdByName ? `كتبه ${m.createdByName}` : "", href: `#/o/${od.id}` });
+      });
+    }));
+  });
+  return { rows, errs };
+}
+
+function renderPharmacy() {
+  S.page = "pharmacy";
+  const T = (S.PH = S.PH || { day: isoDay(new Date()), src: "", place: "", st: "", q: "" });
+  T.rows = null; T.errs = []; T.recs = T.recs && T.recsDay === T.day ? T.recs : {};
+  shell(`<div class="toolbar"><h2>طلبات الصيدلية</h2>
+      <div class="ph-tools">
+        <label class="field inline"><span>اليوم</span><input type="date" id="phDay" value="${T.day}" max="${isoDay(new Date())}"></label>
+        ${S.profile.shared && isPharm() ? `<button class="btn ghost sm" id="chPh">تغيير الاسم (${esc(S.profile.doctorName || "")})</button>` : ""}
+        <button class="btn ghost sm" id="phReload">تحديث</button>
+        <button class="btn ghost sm" id="phPrint">طباعة</button>
+      </div></div>
+    <div id="phBody"><div class="loading">جاري تحميل طلب اليوم…</div></div>`);
+  const page = S._lastHash;
+  document.getElementById("phDay").onchange = (ev) => { if (!ev.target.value) return; T.day = ev.target.value; renderPharmacy(); };
+  document.getElementById("phReload").onclick = () => renderPharmacy();
+  document.getElementById("phPrint").onclick = () => phPrint();
+  document.getElementById("chPh")?.addEventListener("click", () => { sessionStorage.removeItem("deptDoctor_" + S.profile.uid); S.profile.doctorName = ""; askDeptDoctor(); });
+
+  T.unsub?.();
+  T.recsDay = T.day;
+  const day = T.day;
+  T.unsub = onSnapshot(query(collection(db, "pharmacy"), where("day", "==", day)), (s) => {
+    if (T.day !== day) return;
+    T.recs = Object.fromEntries(s.docs.map((d) => [d.id, d.data()]));
+    if (S.page === "pharmacy" && T.rows) drawPharmacy();
+  }, (e) => console.error("pharmacy recs", e));
+  S.pageUnsubs.push(() => { T.unsub?.(); T.unsub = null; });
+
+  phLoad(day).then(({ rows, errs }) => {
+    if (S.page !== "pharmacy" || T.day !== day || S._lastHash !== page) return;
+    T.rows = rows; T.errs = errs;
+    drawPharmacy();
+  });
+}
+
+function phFiltered() {
+  const T = S.PH, q = T.q.trim();
+  return (T.rows || []).filter((r) => {
+    const rec = T.recs[phId(T.day, r.src, r.parentId, r.medId)] || {};
+    if (T.src && r.src !== T.src) return false;
+    if (T.place && r.placeKey !== T.place) return false;
+    if (q && !(r.patientName.includes(q) || r.medicalId.includes(q) || r.drug.toLowerCase().includes(q.toLowerCase()))) return false;
+    if (T.st === "todo" && (rec.dispensed || rec.available === false)) return false;
+    if (T.st === "na" && rec.available !== false) return false;
+    if (T.st === "done" && !rec.dispensed) return false;
+    return true;
+  });
+}
+
+function phGroups(rows) {
+  const order = { icu: 0, ward: 1, ops: 2 };
+  const groups = new Map();
+  [...rows].sort((a, b) => order[a.src] - order[b.src] || a.place.localeCompare(b.place, "ar") || a.bed.localeCompare(b.bed, "ar", { numeric: true }) || a.drug.localeCompare(b.drug))
+    .forEach((r) => {
+      if (!groups.has(r.placeKey)) groups.set(r.placeKey, { src: r.src, place: r.place, pts: new Map() });
+      const g = groups.get(r.placeKey);
+      if (!g.pts.has(r.parentId)) g.pts.set(r.parentId, { r, meds: [] });
+      g.pts.get(r.parentId).meds.push(r);
+    });
+  return [...groups.values()];
+}
+
+function drawPharmacy() {
+  const T = S.PH, body = document.getElementById("phBody");
+  if (!body) return;
+  // نحافظ على مكان الكتابة لو الصفحة اتحدثت والصيدلي بيكتب
+  const ae = document.activeElement, keep = ae && body.contains(ae) && ae.dataset.f ? { k: ae.closest("tr")?.dataset.k, f: ae.dataset.f, s: ae.selectionStart } : null;
+  const all = T.rows || [];
+  const recOf = (r) => T.recs[phId(T.day, r.src, r.parentId, r.medId)] || {};
+  const nDone = all.filter((r) => recOf(r).dispensed).length, nNa = all.filter((r) => recOf(r).available === false).length;
+  const places = [...new Map(all.map((r) => [r.placeKey, `${PH_SRC[r.src]}: ${r.place}`])).entries()];
+  const rows = phFiltered();
+  const kpi = (n, l, cls = "") => `<div class="kpi ${cls}"><strong>${n}</strong><span>${l}</span></div>`;
+  const editable = isPharm() || isAdmin();
+  const rowHtml = (r) => {
+    const k = phId(T.day, r.src, r.parentId, r.medId), x = T.recs[k] || {};
+    const na = x.available === false;
+    return `<tr data-k="${k}" class="${na ? "ph-na" : x.dispensed ? "ph-done" : ""}">
+      <td class="ltr-auto"><strong>${esc(r.drug)}</strong>${r.note ? `<small>${esc(r.note)}</small>` : ""}<small>${esc(r.extra || "")}</small></td>
+      <td class="ltr-auto">${esc(r.dose)}${r.freq ? `<small>${esc(r.freq)}</small>` : ""}</td>
+      <td class="ck"><input type="checkbox" data-f="av" ${x.available === true ? "checked" : ""} ${editable ? "" : "disabled"} aria-label="متوفر"></td>
+      <td class="ck"><input type="checkbox" data-f="na" ${na ? "checked" : ""} ${editable ? "" : "disabled"} aria-label="غير متاح"></td>
+      <td><input class="ph-qty" data-f="qty" value="${esc(x.qty || "")}" placeholder="—" ${editable ? "" : "disabled"} aria-label="الكمية"></td>
+      <td class="ck"><input type="checkbox" data-f="ds" ${x.dispensed ? "checked" : ""} ${editable && !na ? "" : "disabled"} aria-label="تم الصرف"></td>
+      <td class="by-line">${x.dispensed ? `${esc(x.dispensedByName || "")}<br>${fmtDateTime(x.dispensedAt)}` : x.byName && (na || x.available) ? esc(x.byName) : "—"}</td>
+      <td><input class="ph-cm" data-f="cm" value="${esc(x.comment || "")}" placeholder="${na ? "اكتب البدائل…" : "تعليق"}" ${editable ? "" : "disabled"}></td></tr>`;
+  };
+  body.innerHTML = `
+    ${T.errs.length ? `<div class="err">تعذر تحميل: ${T.errs.join("، ")}. اتأكد إن قواعد Firestore الجديدة اتنشرت.</div>` : ""}
+    <div class="kpis">${kpi(all.length, "دواء مطلوب")}${kpi(new Set(all.map((r) => r.parentId)).size, "مريض")}
+      ${kpi(nDone, "تم الصرف")}${kpi(nNa, "غير متاح", nNa ? "hot" : "")}${kpi(all.length - nDone - nNa, "لسه")}</div>
+    <div class="ph-filters">
+      <select id="phSrc"><option value="">كل الأقسام</option>${Object.entries(PH_SRC).map(([k, l]) => `<option value="${k}" ${T.src === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <select id="phPlace"><option value="">كل الوحدات</option>${places.map(([k, l]) => `<option value="${esc(k)}" ${T.place === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+      <select id="phSt"><option value="">كل الحالات</option><option value="todo" ${T.st === "todo" ? "selected" : ""}>لسه متصرفش</option><option value="done" ${T.st === "done" ? "selected" : ""}>تم الصرف</option><option value="na" ${T.st === "na" ? "selected" : ""}>غير متاح</option></select>
+      <input id="phQ" type="search" placeholder="بحث باسم المريض أو الدواء" value="${esc(T.q)}">
+    </div>
+    ${!all.length ? `<div class="empty">مفيش أدوية مطلوبة في اليوم ده.</div>` : !rows.length ? `<div class="empty">مفيش نتائج للفلتر ده.</div>` :
+      phGroups(rows).map((g) => `<section class="panel ph-group">
+        <header><h2>${PH_SRC[g.src]}${g.src === "ops" ? "" : `: ${esc(g.place)}`}</h2><span class="muted">${g.pts.size} مريض، ${[...g.pts.values()].reduce((s, p) => s + p.meds.length, 0)} دواء</span></header>
+        ${[...g.pts.values()].map(({ r, meds }) => `<div class="ph-pt">
+          <div class="ph-pt-h">${isAdmin() ? `<a href="${r.href}"><strong>${esc(r.patientName)}</strong></a>` : `<strong>${esc(r.patientName)}</strong>`}
+            ${r.medicalId ? `<span class="tag mr">${esc(r.medicalId)}</span>` : ""}<span class="muted">${esc(r.bed)}</span></div>
+          <div class="table-wrap"><table class="ph-t"><thead><tr><th>الدواء</th><th>الجرعة</th><th>متوفر</th><th>غير متاح</th><th>الكمية</th><th>تم الصرف</th><th>الصيدلي</th><th>تعليق / البدائل</th></tr></thead>
+          <tbody>${meds.map(rowHtml).join("")}</tbody></table></div></div>`).join("")}
+      </section>`).join("")}`;
+
+  const re = () => drawPharmacy();
+  body.querySelector("#phSrc").onchange = (e) => { T.src = e.target.value; T.place = ""; re(); };
+  body.querySelector("#phPlace").onchange = (e) => { T.place = e.target.value; re(); };
+  body.querySelector("#phSt").onchange = (e) => { T.st = e.target.value; re(); };
+  body.querySelector("#phQ").oninput = (e) => { T.q = e.target.value; clearTimeout(T.qt); T.qt = setTimeout(() => { re(); const q = document.getElementById("phQ"); q?.focus(); q?.setSelectionRange(q.value.length, q.value.length); }, 250); };
+
+  if (editable) {
+    const byKey = new Map(rows.map((r) => [phId(T.day, r.src, r.parentId, r.medId), r]));
+    body.querySelectorAll(".ph-t [data-f]").forEach((el) => {
+      const ev = el.type === "checkbox" ? "change" : "change";
+      el.addEventListener(ev, () => {
+        const k = el.closest("tr").dataset.k, r = byKey.get(k); if (!r) return;
+        const f = el.dataset.f, on = el.checked;
+        let patch;
+        if (f === "av") patch = on ? { available: true } : { available: null, dispensed: false, dispensedAt: null, dispensedBy: "", dispensedByName: "" };
+        else if (f === "na") patch = on ? { available: false, dispensed: false, dispensedAt: null, dispensedBy: "", dispensedByName: "" } : { available: null };
+        else if (f === "ds") patch = on ? { dispensed: true, available: true, dispensedAt: serverTimestamp(), dispensedBy: S.profile.uid, dispensedByName: phName() }
+          : { dispensed: false, dispensedAt: null, dispensedBy: "", dispensedByName: "" };
+        else if (f === "qty") patch = { qty: el.value.trim() };
+        else if (f === "cm") patch = { comment: el.value.trim() };
+        phSave(r, patch);
+        if (f === "na" && on) setTimeout(() => body.querySelector(`tr[data-k="${CSS.escape(k)}"] [data-f="cm"]`)?.focus(), 50);
+      });
+    });
+  }
+  if (keep?.k) {
+    const el = body.querySelector(`tr[data-k="${CSS.escape(keep.k)}"] [data-f="${keep.f}"]`);
+    if (el) { el.focus(); if (keep.s != null && el.setSelectionRange) try { el.setSelectionRange(keep.s, keep.s); } catch {} }
+  }
+}
+
+async function phSave(r, patch) {
+  const T = S.PH, id = phId(T.day, r.src, r.parentId, r.medId);
+  const data = { day: T.day, src: r.src, parentId: r.parentId, medId: r.medId, patientId: r.patientId, patientName: r.patientName,
+    place: r.place, drug: r.drug, dose: r.dose, ...patch, byUid: S.profile.uid, byName: phName(), at: serverTimestamp() };
+  T.recs[id] = { ...(T.recs[id] || {}), ...data, dispensedAt: patch.dispensedAt === undefined ? T.recs[id]?.dispensedAt : patch.dispensed ? new Date() : null };
+  try { await setDoc(doc(db, "pharmacy", id), data, { merge: true }); }
+  catch (e) { toast(errText(e), true); }
+}
+
+function phPrint() {
+  const T = S.PH;
+  if (!T.rows) return;
+  const rows = phFiltered();
+  const st = (x) => (x.available === false ? "غير متاح" : x.dispensed ? "تم الصرف" : x.available ? "متوفر" : "");
+  printDoc(`طلب الصيدلية ${T.day}`, `<h1>طلب الصيدلية: ${fmtDate(T.day + "T00:00:00")}</h1>
+    ${phGroups(rows).map((g) => `<h2>${PH_SRC[g.src]}${g.src === "ops" ? "" : `: ${esc(g.place)}`}</h2>
+      <table><thead><tr><th>المريض</th><th>المكان</th><th>الدواء</th><th>الجرعة</th><th>الحالة</th><th>الكمية</th><th>الصيدلي</th><th>تعليق / البدائل</th></tr></thead>
+      <tbody>${[...g.pts.values()].flatMap(({ meds }) => meds).map((r) => { const x = T.recs[phId(T.day, r.src, r.parentId, r.medId)] || {};
+        return `<tr><td>${esc(r.patientName)}</td><td>${esc(r.bed)}</td><td class="ltr">${esc(r.drug)}</td><td class="ltr">${esc(r.dose)} ${esc(r.freq)}</td>
+          <td>${st(x)}</td><td>${esc(x.qty || "")}</td><td>${esc(x.dispensedByName || (st(x) ? x.byName : "") || "")}</td><td>${esc(x.comment || "")}</td></tr>`; }).join("")}</tbody></table>`).join("")}`, true);
 }
