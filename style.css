@@ -537,3 +537,37 @@ table.ho .pill{margin:0 0 3px 3px}
 .nb2.v{color:var(--danger)}
 .linkbtn.give{color:var(--teal);font-weight:700}
 td.c-on em.given{color:var(--free);font-weight:700}
+
+/* ===== الصيدلية ===== */
+.ph-tools{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+.field.inline{flex-direction:row;align-items:center;gap:8px;margin:0}
+.field.inline input{width:auto}
+.ph-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.ph-filters select,.ph-filters input{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;font:inherit;min-width:150px}
+.ph-filters input{flex:1;min-width:200px}
+.ph-group{margin-bottom:16px}
+.ph-group > header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.ph-pt{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
+.ph-pt-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.ph-t td small{display:block;color:var(--muted);font-size:12px;font-weight:400}
+.ph-t td.ck{text-align:center}
+.ph-t input[type=checkbox]{width:20px;height:20px;accent-color:var(--teal)}
+.ph-t .ph-qty{width:70px}
+.ph-t .ph-cm{min-width:180px;width:100%}
+.ph-t input.ph-qty,.ph-t input.ph-cm{border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;background:#fff}
+.ph-t tr.ph-done td{background:#EEF8F1}
+.ph-t tr.ph-na td{background:var(--danger-soft)}
+.ph-t tr.ph-na td:first-child strong{color:var(--danger)}
+.ph-t tr.ph-na input.ph-cm{border-color:var(--danger)}
+/* حالة الصيدلية في شيت الأدوية */
+em.ph{display:block;font-style:normal;font-size:11px;font-weight:600;margin-top:3px;line-height:1.35}
+em.ph small{display:block;font-weight:400;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+em.ph.ok{color:#1F7A44}
+em.ph.av{color:var(--teal-dark,#0E5A50)}
+em.ph.no{color:var(--danger)}
+td.c-on em.ph.no{color:var(--danger)}
+td.c-on.c-na{background:var(--danger-soft)}
+tr.ph-red > th.med-h strong,tr.ph-red > td:first-child strong{color:var(--danger)}
+tr.ph-red > td{background:var(--danger-soft)}
+.ph-note{display:block;color:var(--danger);font-size:12px;font-weight:600}
+@media (max-width:700px){.ph-filters select,.ph-filters input{min-width:0;flex:1 1 45%}}
