@@ -694,3 +694,19 @@ a.pa-card:hover{box-shadow:0 6px 20px rgba(0,0,0,.08)}
 .nav a{white-space:nowrap}
 .topbar .me{margin-inline-start:auto}
 .topbar .btn.ghost{color:#fff;border-color:rgba(255,255,255,.45)}
+
+/* ===== الضبط (رمادي) ===== */
+:root{--area-set:#4B5563;--area-set-soft:#EEF0F3}
+.topbar.area-set{background:var(--area-set)}
+.topbar.area-set .brand small{color:#fff;opacity:.9;font-weight:600}
+.topbar.area-set .nav a{color:rgba(255,255,255,.88)}
+.topbar.area-set .nav a.on{background:rgba(255,255,255,.2);color:#fff}
+body[data-area="set"] .page{border-top:4px solid var(--area-set)}
+.pa-set{border-top-color:var(--area-set);background:linear-gradient(180deg,var(--area-set-soft),#fff 70%)}
+.pa-set h2,.pa-set .pa-go{color:var(--area-set)}
+.set-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.set-card{display:flex;flex-direction:column;gap:10px;padding:18px;border-radius:14px;background:#fff;border:1px solid var(--line);border-top:5px solid var(--area-set);text-decoration:none;color:var(--ink)}
+.set-card:hover{box-shadow:0 6px 18px rgba(0,0,0,.07)}
+.set-card h3{margin:0;color:var(--area-set)}
+.area-set-box{border-top-color:var(--area-set)}.area-set-box h2{color:var(--area-set)}
+.portal{grid-template-columns:repeat(2,minmax(0,1fr))}@media (max-width:760px){.portal{grid-template-columns:1fr}}
