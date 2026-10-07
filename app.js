@@ -276,10 +276,12 @@ function route() {
 
   const parts = location.hash.replace(/^#\/?/, "").split("/");
   const page = parts[0] || "";
-  if (isDept() && !["", "home", "dept", "patient", "w", "consults"].includes(page)) { location.hash = "#/"; return; }
-  if (isClerk() && !["", "home", "patients"].includes(page)) { location.hash = "#/"; return; }
-  if (isPharm() && !["", "home", "pharmacy"].includes(page)) { location.hash = "#/"; return; }
-  if (isNurseRole() && !["", "home", "nursing", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "opsn", "opstats", "opslists", "o"].includes(page)) { location.hash = "#/"; return; }
+  const outOk = page === "out" && parts[1] === "clinics" && hasClinics();
+  if (S.profile.role === "clinic" && !outOk && page !== "") { location.hash = "#/"; return; }
+  if (!outOk && isDept() && !["", "home", "dept", "patient", "w", "consults"].includes(page)) { location.hash = "#/"; return; }
+  if (!outOk && isClerk() && !["", "home", "patients"].includes(page)) { location.hash = "#/"; return; }
+  if (!outOk && isPharm() && !["", "home", "pharmacy"].includes(page)) { location.hash = "#/"; return; }
+  if (!outOk && isNurseRole() && !["", "home", "nursing", "icu", "unit", "ward", "patient", "w", "handover", "board", "ops", "opsn", "opstats", "opslists", "o"].includes(page)) { location.hash = "#/"; return; }
   const newKey = location.hash;
   // لو نفس الصفحة ومفيش غير تحديث بيانات، متعيدش فتح المستمعين
   if (S._lastHash === newKey && S.page && S.page !== "login" && S.page !== "setup") {
@@ -289,8 +291,12 @@ function route() {
   S._lastHash = newKey;
   cleanupPage();
 
-  if (page === "" && isAdmin()) {
+  if (page === "" && multiArea()) {
     renderPortal();
+  } else if ((page === "" || page === "home") && !isAdmin() && hasClinics() && !hasIn()) {
+    location.hash = "#/out/clinics"; return;
+  } else if (outOk) {
+    renderClinics(parts.slice(2));
   } else if (["in", "out", "adm", "set"].includes(page) && !isAdmin()) {
     location.hash = "#/"; return;
   } else if (page === "in") {
@@ -378,7 +384,7 @@ function shell(inner) {
   const area = areaOfPage(S.page);
   document.body.dataset.area = area;
   const areaNav = area === "portal" ? `<a href="#/" class="on">أقسام المستشفى</a>`
-    : area === "out" ? `${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}<a href="#/out" class="${S.page === "out" && !location.hash.split("/")[2] ? "on" : ""}">الرئيسية</a>${OUT_DEPTS.map(([k, l]) => `<a href="#/out/${k}" class="${location.hash === `#/out/${k}` ? "on" : ""}">${l}</a>`).join("")}`
+    : area === "out" ? `${multiArea() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}${isAdmin() ? `<a href="#/out" class="${S.page === "out" && !location.hash.split("/")[2] ? "on" : ""}">الرئيسية</a>` : ""}${OUT_DEPTS.filter(([k]) => isAdmin() || k === "clinics").map(([k, l]) => `<a href="#/out/${k}" class="${location.hash.startsWith(`#/out/${k}`) ? "on" : ""}">${l}</a>`).join("")}`
     : area === "adm" ? `${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}<a href="#/adm" class="on">الرئيسية</a>`
     : area === "set" ? (() => { const h = location.hash, grp = S.page === "settings" ? setGroupOf(h.split("/")[2] || "users") : "";
         return `<a href="#/" class="area-back">أقسام المستشفى</a><a href="#/set" class="${h === "#/set" ? "on" : ""}">الضبط</a>
@@ -391,8 +397,8 @@ function shell(inner) {
       <span><strong>${esc(s.hospitalName)}</strong><small>${area === "portal" ? "نظام المستشفى" : AREAS[area].name}</small></span>
     </a>
     <nav class="nav">${areaNav || `
-      ${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}
-      <a href="${isAdmin() ? "#/in" : "#/"}" class="${(["home", "dept", "clerk"].includes(S.page) || (S.page === "nurse" && isNurseRole()) || (S.page === "pharmacy" && isPharm())) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
+      ${multiArea() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}
+      <a href="${isAdmin() ? "#/in" : multiArea() ? "#/home" : "#/"}" class="${(["home", "dept", "clerk"].includes(S.page) || (S.page === "nurse" && isNurseRole()) || (S.page === "pharmacy" && isPharm())) && !(isAdmin() && S.page === "dept") ? "on" : ""}">الرئيسية</a>
       ${isDept() || isNurseRole() || isPharm() ? "" : `<a href="#/patients" class="${["patients", "hub"].includes(S.page) ? "on" : ""}">المرضى</a>`}
       ${!isNurseRole() && (canSee("icu") || canSee("ward")) ? `<a href="#/nursing" class="${S.page === "nurse" ? "on" : ""}">التمريض</a>` : ""}
       ${canSee("icu") ? `<a href="#/icu" class="${["dashboard", "patient"].includes(S.page) ? "on" : ""}">الرعاية</a>` : ""}
@@ -1865,7 +1871,7 @@ async function tabUsers(body) {
   <div class="table-wrap"><table>
     <thead><tr><th>الاسم</th><th>اسم المستخدم</th>${Object.values(SECTIONS).map((l) => `<th>${l}</th>`).join("")}<th>طباعة</th><th>فترة التعديل</th><th>الحالة</th><th></th></tr></thead>
     <tbody>${list.map((u) => `<tr>
-      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clerk" ? ` <span class="pill">إداري</span>` : u.role === "nurse" ? ` <span class="pill">تمريض${u.shared ? " (مشترك)" : ""}</span>` : u.role === "pharmacy" ? ` <span class="pill">صيدلية${u.shared ? " (مشترك)" : ""}</span>` : ""}</td>
+      <td>${esc(u.displayName)}${u.role === "admin" ? ` <span class="pill">أدمن</span>` : u.role === "dept" ? ` <span class="pill">قسم ${esc(u.deptSpecialty)}${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clerk" ? ` <span class="pill">إداري</span>` : u.role === "nurse" ? ` <span class="pill">تمريض${u.shared ? " (مشترك)" : ""}</span>` : u.role === "pharmacy" ? ` <span class="pill">صيدلية${u.shared ? " (مشترك)" : ""}</span>` : u.role === "clinic" ? ` <span class="pill">عيادات خارجية</span>` : ""}${u.clinicsRole && u.clinicsRole !== "none" ? ` <span class="pill pill-out">${u.clinicsRole === "manager" ? "مدير العيادات" : "استقبال العيادات"}</span>` : ""}</td>
       <td class="ltr">${esc(u.username)}</td>
       ${Object.keys(SECTIONS).map((k) => `<td>${u.role === "admin" ? "كاملة" : k === "ops" ? (opsTypeOf(u) === "none" ? levelLabel("none") : `${OPS_TYPES[opsTypeOf(u)]}<div class="by-line">${opsPermsOf(u).length} مهمة${(u.opTheaters || []).length ? `، ${esc(u.opTheaters.map((id) => opTheaterById(id)?.name).filter(Boolean).join("، "))}` : ""}</div>`) : `${levelLabel(secOf(u, k))}${k === "icu" && secOf(u, k) !== "none" ? `<div class="by-line">${esc(unitNames(u.units)) || "بدون وحدات"}</div>` : ""}${k === "ward" && secOf(u, k) !== "none" ? `<div class="by-line">${Array.isArray(u.wardDepts) ? esc(u.wardDepts.map((id) => wardById(id)?.name).filter(Boolean).join("، ")) || "بدون أقسام" : "كل الأقسام"}</div>` : ""}`}</td>`).join("")}
       <td>${u.role === "admin" || u.print ? "نعم" : "—"}</td>
@@ -1895,7 +1901,7 @@ function openUserDialog(u, done) {
     </div>` : ""}
     <div class="row2">
       <label class="field"><span>نوع الحساب</span>
-        <select name="role" ${self ? "disabled" : ""}><option value="doctor" ${!["admin", "dept", "clerk", "nurse", "pharmacy"].includes(u.role) ? "selected" : ""}>مستخدم</option><option value="dept" ${u.role === "dept" ? "selected" : ""}>حساب قسم</option><option value="clerk" ${u.role === "clerk" ? "selected" : ""}>حساب إداري (تسجيل بيانات الدخول فقط)</option><option value="nurse" ${u.role === "nurse" ? "selected" : ""}>حساب تمريض</option><option value="pharmacy" ${u.role === "pharmacy" ? "selected" : ""}>حساب صيدلية</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>أدمن</option></select></label>
+        <select name="role" ${self ? "disabled" : ""}><option value="doctor" ${!["admin", "dept", "clerk", "nurse", "pharmacy", "clinic"].includes(u.role) ? "selected" : ""}>مستخدم</option><option value="dept" ${u.role === "dept" ? "selected" : ""}>حساب قسم</option><option value="clerk" ${u.role === "clerk" ? "selected" : ""}>حساب إداري (تسجيل بيانات الدخول فقط)</option><option value="nurse" ${u.role === "nurse" ? "selected" : ""}>حساب تمريض</option><option value="pharmacy" ${u.role === "pharmacy" ? "selected" : ""}>حساب صيدلية</option><option value="clinic" ${u.role === "clinic" ? "selected" : ""}>حساب عيادات خارجية</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>أدمن</option></select></label>
       <label class="field"><span>فترة التعديل في الرعاية</span>
         <select name="editWindowHours"><option value="12" ${u.editWindowHours !== 24 ? "selected" : ""}>12 ساعة (الشيفت الحالي)</option><option value="24" ${u.editWindowHours === 24 ? "selected" : ""}>24 ساعة (الشيفت الحالي واللي قبله)</option></select></label>
     </div>
@@ -1915,6 +1921,8 @@ function openUserDialog(u, done) {
       <label><input type="checkbox" name="nVitals" ${u.nurseVitals ? "checked" : ""}> يسجّل العلامات الحيوية (في الرعاية)</label>
       <label><input type="checkbox" name="nShared" ${u.shared && u.role === "nurse" ? "checked" : ""}> حساب مشترك (بيسأل عن اسم الممرض)</label></div>
     <p class="hint nurse-only">التمريض بيشوف حالات وحداته وأقسامه بس (وفي العمليات بيسجّل أوقات المراحل والتشيك ليست)، ويكتب ملاحظات التمريض، ويسجّل إعطاء الأدوية بالوقت واسم اللي أعطى. مبيقدرش يعدّل العلاج أو الجرعة أو المدة.</p>
+    <label class="field cl-box"><span>العيادات الخارجية</span>
+      <select name="clRole">${Object.entries(CL_ROLES).map(([k, l]) => `<option value="${k}" ${(u.clinicsRole || (u.role === "clinic" ? "reception" : "none")) === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="field ops-box"><span>العمليات</span>
       <select name="opsType">${Object.entries(OPS_TYPES).map(([k, l]) => `<option value="${k}" ${opsTypeOf(u) === k ? "selected" : ""}>${l}</option>`).join("")}</select>
       <div class="ops-detail">
@@ -1943,9 +1951,10 @@ function openUserDialog(u, done) {
   const sync = () => {
     f.querySelectorAll(".doc-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "doctor"));
     f.querySelectorAll(".dept-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "dept"));
-    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse", "pharmacy"].includes(f.elements.role.value)));
+    f.querySelectorAll(".not-dept").forEach((el) => el.classList.toggle("hidden", ["dept", "clerk", "nurse", "pharmacy", "clinic"].includes(f.elements.role.value)));
     f.querySelectorAll(".pharm-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "pharmacy"));
     f.querySelectorAll(".ops-box").forEach((el) => el.classList.toggle("hidden", !["doctor", "nurse"].includes(f.elements.role.value)));
+    f.querySelectorAll(".cl-box").forEach((el) => el.classList.toggle("hidden", !["doctor", "nurse", "clerk", "clinic"].includes(f.elements.role.value)));
     f.querySelector(".ops-detail").classList.toggle("hidden", f.elements.opsType.value === "none");
     f.querySelectorAll(".nurse-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "nurse"));
     f.querySelectorAll(".clerk-only").forEach((el) => el.classList.toggle("hidden", f.elements.role.value !== "clerk"));
@@ -1968,7 +1977,7 @@ function openUserDialog(u, done) {
     const err = document.getElementById("userErr");
     err.textContent = "";
     const role = self ? "admin" : f.elements.role.value;
-    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse", "pharmacy"].includes(role) || k === "ops" ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
+    const sections = Object.fromEntries(Object.keys(SECTIONS).map((k) => [k, role === "admin" ? "write" : ["dept", "clerk", "nurse", "pharmacy", "clinic"].includes(role) || k === "ops" ? "none" : f.querySelector(`input[name="sec_${k}"]:checked`).value]));
     const oType = ["doctor", "nurse"].includes(role) ? f.elements.opsType.value : role === "admin" ? "manager" : "none";
     const oPerms = oType === "none" ? [] : checkedValues(f, "opsPerm");
     if (role === "admin") sections.ops = "write";
@@ -1984,20 +1993,22 @@ function openUserDialog(u, done) {
       nurseVitals: isN ? f.elements.nVitals.checked : false,
       opsType: oType, opsPerms: oPerms,
       opTheaters: oType === "none" ? [] : checkedValues(f, "opth"),
-      print: role === "admin" ? true : ["dept", "clerk", "nurse", "pharmacy"].includes(role) ? false : f.elements.print.checked,
+      print: role === "admin" ? true : ["dept", "clerk", "nurse", "pharmacy", "clinic"].includes(role) ? false : f.elements.print.checked,
+      clinicsRole: ["doctor", "nurse", "clerk", "clinic"].includes(role) ? f.elements.clRole.value : "none",
       clerkSections: role === "clerk" ? checkedValues(f, "clerkSec") : [],
       shared: role === "dept" ? f.elements.sharedAcc.checked : isN ? f.elements.nShared.checked : role === "pharmacy" ? f.elements.pShared.checked : false,
-      specialties: role === "dept" ? [f.elements.deptSpecialty.value].filter(Boolean) : role === "pharmacy" ? [] : checkedValues(f, "uspecs").slice(0, 10),
+      specialties: role === "dept" ? [f.elements.deptSpecialty.value].filter(Boolean) : ["pharmacy", "clinic"].includes(role) ? [] : checkedValues(f, "uspecs").slice(0, 10),
       deptSpecialty: role === "dept" ? f.elements.deptSpecialty.value : "",
       editWindowHours: Number(f.elements.editWindowHours.value),
     };
     if (!data.displayName) { err.textContent = "اكتب اسم المستخدم الظاهر."; return; }
     if (role === "dept" && !data.deptSpecialty) { err.textContent = "اختر القسم."; return; }
+    if (role === "clinic" && f.elements.clRole.value === "none") { err.textContent = "اختر صلاحية العيادات (استقبال أو مدير)."; return; }
     if (oType !== "none" && !oPerms.length) { err.textContent = "اختر مهمة واحدة على الأقل في العمليات، أو خلي النوع \"مفيش دخول\"."; return; }
     if (isN && !nUnits.length && !nWards.length && oType === "none") { err.textContent = "اختر وحدة رعاية أو قسم داخلي أو قسم عمليات واحد على الأقل."; return; }
     if (role === "doctor" && sections.ward !== "none" && wardUnits().length && !data.wardDepts.length) { err.textContent = "اختر قسم داخلي واحد على الأقل."; return; }
     if (role === "clerk" && !data.clerkSections.length) { err.textContent = "اختر الرعاية أو الداخلي (أو الاتنين)."; return; }
-    if (role === "doctor" && Object.values(sections).every((x) => x === "none")) { err.textContent = "اختر قسم واحد على الأقل."; return; }
+    if (role === "doctor" && Object.values(sections).every((x) => x === "none") && f.elements.clRole.value === "none") { err.textContent = "اختر قسم واحد على الأقل."; return; }
     if (role !== "admin" && sections.icu !== "none" && !data.units.length) { err.textContent = "اختر وحدة رعاية واحدة على الأقل."; return; }
     const btn = f.querySelector("button.btn"); btn.disabled = true;
     try {
@@ -6582,6 +6593,13 @@ function renderPortal() {
   const today = isoDay(new Date());
   const opsToday = (S.opsUpcoming || []).filter((o) => o.proposedAt && isoDay(toDate(o.proposedAt)) === today).length;
   const stat = (n, l) => `<div class="pa-stat"><strong>${n}</strong><span>${l}</span></div>`;
+  if (!isAdmin()) {
+    shell(`<div class="portal">
+      ${hasIn() ? `<a class="pa-card pa-in" href="#/home"><div class="pa-top"><h2>${AREAS.in.name}</h2><span class="pa-go">دخول ←</span></div><p>${AREAS.in.desc}</p></a>` : ""}
+      ${hasClinics() ? `<a class="pa-card pa-out" href="#/out/clinics"><div class="pa-top"><h2>${AREAS.out.name}</h2><span class="pa-go out">دخول ←</span></div><p>العيادات</p></a>` : ""}
+    </div>`);
+    return;
+  }
   shell(`
   <div class="portal">
     <a class="pa-card pa-in" href="#/in">
@@ -6591,9 +6609,9 @@ function renderPortal() {
       <div class="pa-chips"><span>الرعايات المركزة</span><span>الداخلي بأقسامه</span><span>العمليات</span><span>التمريض</span><span>الصيدلية</span></div>
     </a>
     <div class="pa-card pa-out">
-      <div class="pa-top"><h2>${AREAS.out.name}</h2><span class="pa-soon">تحت التطوير</span></div>
+      <div class="pa-top"><h2>${AREAS.out.name}</h2><span class="pa-soon">العيادات شغالة</span></div>
       <p>${AREAS.out.desc}</p>
-      <div class="pa-chips">${OUT_DEPTS.map(([k, l]) => `<a href="#/out/${k}">${l}</a>`).join("")}</div>
+      <div class="pa-chips">${OUT_DEPTS.map(([k, l]) => `<a href="#/out/${k}" class="${k === "clinics" ? "live" : ""}">${l}</a>`).join("")}</div>
     </div>
     <div class="pa-card pa-adm">
       <div class="pa-top"><h2>${AREAS.adm.name}</h2><span class="pa-soon">تحت التطوير</span></div>
@@ -6613,11 +6631,18 @@ function renderOutArea(sub) {
   const d = OUT_DEPTS.find(([k]) => k === sub);
   shell(d ? `<div class="soon-box area-out-box"><h2>${d[1]}</h2><p>قسم ${d[1]} تبع ${AREAS.out.name}، ولسه تحت التطوير.</p><p class="muted">هنحدد مع بعض شاشاته وصلاحياته لما نبدأ نبنيه.</p><a class="btn ghost" href="#/out">رجوع لخارجي المستشفى</a></div>`
     : `<div class="toolbar"><h2>${AREAS.out.name}</h2></div>
-    <div class="out-grid">${OUT_DEPTS.map(([k, l]) => `<a class="out-tile" href="#/out/${k}"><strong>${l}</strong><span>تحت التطوير</span></a>`).join("")}</div>`);
+    <div class="out-grid">${OUT_DEPTS.map(([k, l]) => `<a class="out-tile ${k === "clinics" ? "live" : ""}" href="#/out/${k}"><strong>${l}</strong><span>${k === "clinics" ? "شغالة" : "تحت التطوير"}</span></a>`).join("")}</div>`);
 }
 function renderSetArea(sub) {
   S.page = "set";
-  if (sub === "out" || sub === "adm") {
+  if (sub === "out") {
+    shell(`<div class="toolbar"><h2>ضبط إعدادات خارجي المستشفى</h2></div><div class="set-grid">
+      ${OUT_DEPTS.map(([k, l]) => k === "clinics" ? `<a class="set-card" href="#/out/clinics/settings"><div class="pa-top"><h3>${l}</h3></div><div class="pa-chips"><span>الغرف</span><span>الفترات</span><span>عدد الحالات</span></div></a>
+        <a class="set-card" href="#/out/clinics/week"><div class="pa-top"><h3>جدول العيادات الأسبوعي</h3></div><div class="pa-chips"><span>الاستشاريين والتخصصات لكل يوم وفترة</span></div></a>`
+        : `<div class="set-card"><div class="pa-top"><h3>${l}</h3><span class="pa-soon">تحت التطوير</span></div></div>`).join("")}</div>`);
+    return;
+  }
+  if (sub === "adm") {
     const nm = sub === "out" ? AREAS.out.name : AREAS.adm.name;
     shell(`<div class="toolbar"><h2>ضبط إعدادات ${nm.replace("الأقسام ", "")}</h2></div>
       <div class="soon-box area-set-box"><h2>ضبط إعدادات ${nm}</h2><p>الإعدادات دي هتظهر هنا لما نبني أقسام ${nm}.</p><a class="btn ghost" href="#/set">رجوع للضبط</a></div>`);
@@ -6636,4 +6661,326 @@ function renderSetArea(sub) {
 function renderAdmArea() {
   S.page = "adm";
   shell(`<div class="soon-box area-adm-box"><h2>${AREAS.adm.name}</h2><p>الأقسام الإدارية لسه تحت التطوير، وهتتبني لوحدها.</p><a class="btn ghost" href="#/">رجوع لأقسام المستشفى</a></div>`);
+}
+
+/* =========================================================
+   خارجي المستشفى: العيادات
+   - جدول أسبوعي ثابت (السبت للخميس): كل يوم × كل غرفة × كل فترة = استشاري + تخصص + عدد الحالات
+   - استثناءات على تاريخ معين: الدكتور معتذر، أو بديل
+   - خريطة اليوم، وحجز المرضى برقم دور لكل عيادة، وتسجيل الحضور والكشف
+   ========================================================= */
+const CL_DAYS = [[6, "السبت"], [0, "الأحد"], [1, "الاثنين"], [2, "الثلاثاء"], [3, "الأربعاء"], [4, "الخميس"]];
+const DAY_NAME = { 6: "السبت", 0: "الأحد", 1: "الاثنين", 2: "الثلاثاء", 3: "الأربعاء", 4: "الخميس", 5: "الجمعة" };
+const DEFAULT_CL_SLOTS = [{ id: "s1", name: "الفترة الأولى", from: "09:00", to: "11:00" }, { id: "s2", name: "الفترة التانية", from: "11:00", to: "14:00" },
+  { id: "s3", name: "المسائي", from: "16:00", to: "18:00" }];
+const DEFAULT_CL_ROOMS = [{ id: "r1", name: "عيادة 1" }, { id: "r2", name: "عيادة 2" }, { id: "r3", name: "عيادة 3" }, { id: "r4", name: "عيادة 4" }];
+const CL_STATUS = { booked: "محجوز", arrived: "حضر", seen: "اتكشف", noshow: "محضرش", cancelled: "ملغي" };
+const CL_ROLES = { none: "مفيش دخول على العيادات", reception: "استقبال العيادات (حجز وحضور)", manager: "مدير العيادات (الجدول والإعدادات)" };
+
+const clinicsRole = () => (isAdmin() ? "manager" : S.profile?.clinicsRole || "none");
+const hasClinics = () => clinicsRole() !== "none";
+const clinicMgr = () => clinicsRole() === "manager";
+const hasIn = () => !isAdmin() && (["dept", "clerk", "nurse", "pharmacy"].includes(S.profile?.role) || ["icu", "ward", "ops", "reports"].some((k) => canSee(k)));
+const multiArea = () => isAdmin() || (hasClinics() && hasIn());
+const clCfg = () => S.clinics || {};
+const clRooms = () => (clCfg().rooms?.length ? clCfg().rooms : DEFAULT_CL_ROOMS);
+const clSlots = () => (clCfg().slots?.length ? clCfg().slots : DEFAULT_CL_SLOTS);
+const clDow = (date) => new Date(date + "T12:00:00").getDay();
+const clKey = (date, roomId, slotId) => `${date}_${roomId}_${slotId}`;
+function ensureClinics() {
+  if (S._clSub || !S.profile) return;
+  S._clSub = onSnapshot(doc(db, "config", "clinics"), (s) => {
+    S.clinics = s.data() || {};
+    if (String(S.page).startsWith("out-clinics")) drawClinics();
+  }, () => { S.clinics = {}; });
+}
+// العيادة الفعلية في تاريخ معين = الجدول الأسبوعي + استثناء التاريخ ده
+function clSession(date, roomId, slotId, excs) {
+  const base = clCfg().week?.[clDow(date)]?.[`${roomId}|${slotId}`] || null;
+  const ex = (excs || []).find((e) => e.roomId === roomId && e.slotId === slotId && e.date === date);
+  if (ex?.type === "off") return base ? { ...base, off: true, offNote: ex.note || "" } : null;
+  if (ex?.type === "sub") return { cap: base?.cap || clCfg().defaultCap || 30, ...base, consultant: ex.consultant, specialty: ex.specialty || base?.specialty || "", sub: true, subNote: ex.note || "", baseConsultant: base?.consultant || "" };
+  return base;
+}
+const slotNow = (date) => {
+  if (date !== isoDay(new Date())) return "";
+  const hm = `${pad(new Date().getHours())}:${pad(new Date().getMinutes())}`;
+  return clSlots().find((s) => s.from <= hm && hm < s.to)?.id || "";
+};
+
+function renderClinics(parts) {
+  ensureClinics();
+  const C = (S.CL = S.CL || { date: isoDay(new Date()), tab: "map", spec: "" });
+  const view = parts[0] || "";
+  C.view = view; C.args = parts.slice(1);
+  if (view === "s" && C.args[0]) C.date = C.args[0];
+  S.page = view === "s" ? "out-clinics-s" : "out-clinics";
+  if (view === "week") C.tab = "week"; else if (view === "settings") C.tab = "settings"; else if (!view) C.tab = C.tab === "week" || C.tab === "settings" ? "map" : C.tab;
+  if (view === "settings" && !clinicMgr()) { location.hash = "#/out/clinics"; return; }
+  shell(`<div id="clBody"><div class="loading">جاري التحميل…</div></div>`);
+  C.excs = []; C.visits = []; C.got = 0;
+  const date = C.date;
+  S.pageUnsubs.push(onSnapshot(query(collection(db, "clinicExceptions"), where("date", "==", date)), (s) => {
+    C.excs = s.docs.map((d) => ({ id: d.id, ...d.data() })); C.got |= 1; drawClinics();
+  }, (e) => { console.error("clexc", e); C.got |= 1; drawClinics(); }));
+  S.pageUnsubs.push(onSnapshot(query(collection(db, "clinicVisits"), where("date", "==", date)), (s) => {
+    C.visits = s.docs.map((d) => ({ id: d.id, ...d.data() })); C.got |= 2; drawClinics();
+  }, (e) => { console.error("clvis", e); C.got |= 2; drawClinics(); }));
+  if (view === "week" || view === "settings") { C.got = 3; drawClinics(); }
+}
+
+function drawClinics() {
+  const C = S.CL, body = document.getElementById("clBody");
+  if (!C || !body || S.clinics === undefined) return;
+  if (C.view === "s") return drawClinicSession(body);
+  const tabs = `<nav class="tabs"><a href="#/out/clinics" class="${C.tab === "map" ? "on" : ""}">خريطة العيادات</a><a href="#/out/clinics/week" class="${C.tab === "week" ? "on" : ""}">الجدول الأسبوعي</a>
+    ${clinicMgr() ? `<a href="#/out/clinics/settings" class="${C.tab === "settings" ? "on" : ""}">إعدادات العيادات</a>` : ""}</nav>`;
+  const head = `<div class="toolbar"><h2>العيادات</h2><div class="ph-tools">${C.tab === "map" ? `<label class="field inline"><span>اليوم</span><input type="date" id="clDate" value="${C.date}"></label>
+    <button class="btn ghost sm" id="clToday">النهارده</button>` : ""}<button class="btn" id="clBook">حجز مريض</button></div></div>`;
+  if (C.tab === "week") body.innerHTML = head + tabs + clWeekHtml();
+  else if (C.tab === "settings") body.innerHTML = head + tabs + clSettingsHtml();
+  else body.innerHTML = head + tabs + clMapHtml();
+  document.getElementById("clDate")?.addEventListener("change", (e) => { if (e.target.value) { C.date = e.target.value; S._lastHash = null; route(); } });
+  document.getElementById("clToday")?.addEventListener("click", () => { C.date = isoDay(new Date()); S._lastHash = null; route(); });
+  document.getElementById("clBook").onclick = () => pickPatient("حجز في العيادات", (p) => clBookDialog(p));
+  body.querySelectorAll("[data-spec]").forEach((b) => (b.onclick = () => { C.spec = C.spec === b.dataset.spec ? "" : b.dataset.spec; drawClinics(); }));
+  body.querySelectorAll("[data-wk]").forEach((b) => (b.onclick = () => { const [dow, r, s] = b.dataset.wk.split("|"); clEditWeek(Number(dow), r, s); }));
+  if (C.tab === "settings") bindClSettings(body);
+}
+
+function clMapHtml() {
+  const C = S.CL, date = C.date, dow = clDow(date);
+  if (dow === 5) return `<div class="empty">يوم ${fmtDate(date + "T00:00:00")} جمعة، والعيادات أجازة.</div>`;
+  const now = slotNow(date);
+  const cells = [];
+  clRooms().forEach((r) => clSlots().forEach((s) => { const x = clSession(date, r.id, s.id, C.excs); if (x) cells.push({ r, s, x }); }));
+  const specs = [...new Set(cells.filter((c) => !c.x.off).map((c) => c.x.specialty).filter(Boolean))];
+  const vOf = (r, s) => C.visits.filter((v) => v.roomId === r.id && v.slotId === s.id && v.status !== "cancelled");
+  const tot = C.visits.filter((v) => v.status !== "cancelled");
+  const kpi = (n, l, cls = "") => `<div class="kpi ${cls}"><strong>${n}</strong><span>${l}</span></div>`;
+  return `<p class="cl-day">${DAY_NAME[dow]} ${fmtDate(date + "T00:00:00")}${date === isoDay(new Date()) ? " (النهارده)" : ""}</p>
+    <div class="kpis">${kpi(cells.filter((c) => !c.x.off).length, "عيادة شغالة")}${kpi(tot.length, "حجز")}${kpi(tot.filter((v) => ["arrived", "seen"].includes(v.status)).length, "حضر")}
+      ${kpi(tot.filter((v) => v.status === "seen").length, "اتكشف")}${cells.some((c) => c.x.off) ? kpi(cells.filter((c) => c.x.off).length, "دكتور معتذر", "hot") : ""}</div>
+    ${specs.length ? `<div class="cl-specs"><span>التخصصات المتاحة:</span>${specs.map((sp) => `<button type="button" class="chip ${C.spec === sp ? "on" : ""}" data-spec="${esc(sp)}">${esc(sp)}</button>`).join("")}</div>` : ""}
+    ${!cells.length ? `<div class="empty">مفيش عيادات في الجدول يوم ${DAY_NAME[dow]}. ${clinicMgr() ? `ضيفها من <a href="#/out/clinics/week">الجدول الأسبوعي</a>.` : ""}</div>` : `
+    <div class="table-wrap"><table class="cl-map">
+      <thead><tr><th>الغرفة</th>${clSlots().map((s) => `<th class="${s.id === now ? "now" : ""}">${esc(s.name)}<small>${s.from} - ${s.to}</small></th>`).join("")}</tr></thead>
+      <tbody>${clRooms().map((r) => `<tr><th>${esc(r.name)}</th>${clSlots().map((s) => {
+        const x = clSession(date, r.id, s.id, C.excs);
+        if (!x) return `<td class="cl-empty">—</td>`;
+        const dim = C.spec && x.specialty !== C.spec;
+        const vs = vOf(r, s), cap = Number(x.cap) || 0;
+        return `<td class="cl-cell ${x.off ? "off" : ""} ${x.sub ? "sub" : ""} ${s.id === now ? "now" : ""} ${dim ? "dim" : ""}">
+          <a href="#/out/clinics/s/${date}/${r.id}/${s.id}" class="plain">
+          <span class="cl-sp">${esc(x.specialty || "")}</span><strong>${esc(x.consultant || "")}</strong>
+          ${x.off ? `<em class="cl-off">معتذر${x.offNote ? `: ${esc(x.offNote)}` : ""}</em>` : x.sub ? `<em class="cl-subn">بديل${x.baseConsultant ? ` عن ${esc(x.baseConsultant)}` : ""}</em>` : ""}
+          ${x.off ? "" : `<span class="cl-cnt"><b>${vs.length}</b>${cap ? `/${cap}` : ""} حجز، ${vs.filter((v) => ["arrived", "seen"].includes(v.status)).length} حضر، ${vs.filter((v) => v.status === "seen").length} اتكشف</span>
+          ${cap ? `<span class="meter"><i style="width:${Math.min(100, Math.round((vs.length / cap) * 100))}%"></i></span>` : ""}`}</a></td>`;
+      }).join("")}</tr>`).join("")}</tbody></table></div>`}`;
+}
+
+function clWeekHtml() {
+  const w = clCfg().week || {}, mgr = clinicMgr();
+  const bySpec = new Map();
+  CL_DAYS.forEach(([d, dn]) => clRooms().forEach((r) => clSlots().forEach((s) => {
+    const x = w[d]?.[`${r.id}|${s.id}`]; if (!x) return;
+    const k = x.specialty || "بدون تخصص"; if (!bySpec.has(k)) bySpec.set(k, []);
+    bySpec.get(k).push(`${dn} ${s.name} (${r.name}): ${x.consultant}`);
+  })));
+  return `${mgr ? `<p class="hint">اضغط على أي خانة عشان تحدد الاستشاري والتخصص وعدد الحالات. الجدول بيتكرر كل أسبوع، وللاعتذار أو البديل في يوم معين افتح العيادة من الخريطة.</p>` : ""}
+    ${clSlots().map((s) => `<section class="panel cl-wk"><header><h2>${esc(s.name)} <small>${s.from} - ${s.to}</small></h2></header>
+      <div class="table-wrap"><table class="cl-week"><thead><tr><th>الغرفة</th>${CL_DAYS.map(([, dn]) => `<th>${dn}</th>`).join("")}</tr></thead>
+      <tbody>${clRooms().map((r) => `<tr><th>${esc(r.name)}</th>${CL_DAYS.map(([d]) => { const x = w[d]?.[`${r.id}|${s.id}`];
+        const inner = x ? `<strong>${esc(x.consultant)}</strong><span class="cl-sp">${esc(x.specialty || "")}</span>${x.cap ? `<small>${x.cap} حالة</small>` : ""}` : mgr ? `<span class="muted">+</span>` : "";
+        return `<td class="${x ? "has" : ""}">${mgr ? `<button type="button" class="cl-wbtn" data-wk="${d}|${r.id}|${s.id}">${inner}</button>` : inner}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div></section>`).join("")}
+    <section class="panel"><header><h2>التخصصات في الأسبوع</h2></header>${bySpec.size ? `<div class="table-wrap"><table><thead><tr><th>التخصص</th><th>المواعيد</th></tr></thead>
+      <tbody>${[...bySpec.entries()].sort((a, b) => a[0].localeCompare(b[0], "ar")).map(([k, l]) => `<tr><td><strong>${esc(k)}</strong></td><td>${l.map(esc).join("<br>")}</td></tr>`).join("")}</tbody></table></div>`
+      : `<p class="muted">الجدول لسه فاضي.</p>`}</section>`;
+}
+
+function clEditWeek(dow, roomId, slotId) {
+  const w = JSON.parse(JSON.stringify(clCfg().week || {}));
+  const k = `${roomId}|${slotId}`, x = w[dow]?.[k] || {};
+  const r = clRooms().find((z) => z.id === roomId), s = clSlots().find((z) => z.id === slotId);
+  formDialog(`${DAY_NAME[dow]}، ${esc(r?.name || "")}، ${esc(s?.name || "")}`, `
+    <label class="field"><span>الاستشاري</span><input name="cons" list="dlClCons" value="${esc(x.consultant || "")}" autocomplete="off">
+      <datalist id="dlClCons">${(S.settings.consultants || []).map((c) => `<option value="${esc(c)}">`).join("")}</datalist></label>
+    <div class="row2"><label class="field"><span>التخصص</span><select name="spec">${optionsHtml(S.settings.specialties || [], x.specialty || "")}</select></label>
+      <label class="field"><span>أقصى عدد حالات</span><input name="cap" type="number" min="0" value="${x.cap ?? (clCfg().defaultCap || 30)}"></label></div>
+    <p class="hint">علشان تفضّي الخانة امسح اسم الاستشاري واحفظ.</p>`, "حفظ", async (f) => {
+    const cons = f.elements.cons.value.trim();
+    w[dow] = w[dow] || {};
+    if (!cons) delete w[dow][k];
+    else {
+      if (!f.elements.spec.value) return "اختر التخصص.";
+      w[dow][k] = { consultant: cons, specialty: f.elements.spec.value, cap: Number(f.elements.cap.value) || 0 };
+    }
+    await setDoc(doc(db, "config", "clinics"), { week: w, updatedByName: S.profile.displayName, updatedAt: serverTimestamp() }, { merge: true });
+    toast("تم حفظ الجدول");
+  });
+}
+
+function clSettingsHtml() {
+  const c = clCfg();
+  return `<div class="file-grid">
+    <section class="panel"><header><h2>الغرف (السلوت)</h2></header><div id="clRooms">${clRooms().map((r) => `<div class="row-inline"><input data-room="${r.id}" value="${esc(r.name)}"><button type="button" class="linkbtn del" data-rrm="${r.id}">حذف</button></div>`).join("")}</div>
+      <button type="button" class="linkbtn" id="clAddRoom">+ إضافة غرفة</button></section>
+    <section class="panel"><header><h2>الفترات</h2></header><div id="clSlots">${clSlots().map((s) => `<div class="row-inline" data-slot="${s.id}"><input name="n" value="${esc(s.name)}"><input name="f" type="time" value="${s.from}"><input name="t" type="time" value="${s.to}"><button type="button" class="linkbtn del" data-srm="${s.id}">حذف</button></div>`).join("")}</div>
+      <button type="button" class="linkbtn" id="clAddSlot">+ إضافة فترة</button></section>
+    <section class="panel"><header><h2>عام</h2></header><label class="field"><span>عدد الحالات الافتراضي لكل عيادة</span><input id="clCap" type="number" min="0" value="${c.defaultCap || 30}"></label></section>
+  </div><div class="actions"><button class="btn" id="clSave">حفظ الإعدادات</button></div>`;
+}
+function bindClSettings(body) {
+  const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 4);
+  body.querySelector("#clAddRoom").onclick = () => body.querySelector("#clRooms").insertAdjacentHTML("beforeend", `<div class="row-inline"><input data-room="${uid("r")}" value="عيادة جديدة"><button type="button" class="linkbtn del" data-rrm>حذف</button></div>`);
+  body.querySelector("#clAddSlot").onclick = () => body.querySelector("#clSlots").insertAdjacentHTML("beforeend", `<div class="row-inline" data-slot="${uid("s")}"><input name="n" value="فترة جديدة"><input name="f" type="time" value="14:00"><input name="t" type="time" value="16:00"><button type="button" class="linkbtn del" data-srm>حذف</button></div>`);
+  body.onclick = (e) => { const b = e.target.closest("[data-rrm],[data-srm]"); if (b) b.closest(".row-inline").remove(); };
+  body.querySelector("#clSave").onclick = async () => {
+    const rooms = [...body.querySelectorAll("[data-room]")].map((i) => ({ id: i.dataset.room, name: i.value.trim() })).filter((r) => r.name);
+    const slots = [...body.querySelectorAll("[data-slot]")].map((d) => ({ id: d.dataset.slot, name: d.querySelector('[name="n"]').value.trim(), from: d.querySelector('[name="f"]').value, to: d.querySelector('[name="t"]').value }))
+      .filter((s) => s.name && s.from && s.to).sort((a, b) => a.from.localeCompare(b.from));
+    if (!rooms.length || !slots.length) { toast("لازم غرفة وفترة واحدة على الأقل", true); return; }
+    if (slots.some((s) => s.from >= s.to)) { toast("وقت نهاية الفترة لازم يكون بعد البداية", true); return; }
+    try {
+      await setDoc(doc(db, "config", "clinics"), { rooms, slots, defaultCap: Number(body.querySelector("#clCap").value) || 0, updatedByName: S.profile.displayName, updatedAt: serverTimestamp() }, { merge: true });
+      toast("تم حفظ إعدادات العيادات");
+    } catch (e) { toast(errText(e), true); }
+  };
+}
+
+// ---------- صفحة العيادة في يوم معين ----------
+function drawClinicSession(body) {
+  const C = S.CL, [date, roomId, slotId] = C.args;
+  const r = clRooms().find((z) => z.id === roomId), s = clSlots().find((z) => z.id === slotId);
+  const x = clSession(date, roomId, slotId, C.excs);
+  const vs = C.visits.filter((v) => v.roomId === roomId && v.slotId === slotId).sort((a, b) => a.queueNo - b.queueNo);
+  const live = vs.filter((v) => v.status !== "cancelled");
+  const cap = Number(x?.cap) || 0;
+  const act = (v, st, l, cls = "ghost") => `<button class="btn ${cls} sm" data-vst="${st}" data-id="${v.id}">${l}</button>`;
+  body.innerHTML = `
+    <div class="file-head"><a class="back" href="#/out/clinics">خريطة العيادات</a>
+      <h1>${esc(x?.consultant || "عيادة فاضية")}</h1>
+      <div class="tags"><span class="tag">${DAY_NAME[clDow(date)]} ${fmtDate(date + "T00:00:00")}</span><span class="tag">${esc(r?.name || "")}</span>
+        <span class="tag">${esc(s?.name || "")} ${s ? `${s.from} - ${s.to}` : ""}</span>${x?.specialty ? `<span class="tag">${esc(x.specialty)}</span>` : ""}
+        ${x?.off ? `<span class="st st-cancelled">الدكتور معتذر</span>` : ""}${x?.sub ? `<span class="st st-booked">بديل${x.baseConsultant ? ` عن ${esc(x.baseConsultant)}` : ""}</span>` : ""}</div>
+      <div class="file-actions">
+        ${x && !x.off ? `<button class="btn" id="csBook">حجز مريض</button>` : ""}
+        ${clinicMgr() ? `<button class="btn ghost" id="csExc">${x?.off || x?.sub ? "تعديل الاستثناء" : "اعتذار / بديل في اليوم ده"}</button>` : ""}
+        <button class="btn ghost" id="csPrint">طباعة الكشف</button>
+      </div></div>
+    <div class="kpis"><div class="kpi"><strong>${live.length}${cap ? `<small>/${cap}</small>` : ""}</strong><span>حجز</span></div>
+      <div class="kpi"><strong>${live.filter((v) => ["arrived", "seen"].includes(v.status)).length}</strong><span>حضر</span></div>
+      <div class="kpi"><strong>${live.filter((v) => v.status === "seen").length}</strong><span>اتكشف</span></div>
+      <div class="kpi"><strong>${live.filter((v) => v.status === "arrived").length}</strong><span>منتظر دلوقتي</span></div></div>
+    ${vs.length ? `<div class="table-wrap"><table class="cl-list"><thead><tr><th>الدور</th><th>المريض</th><th>الرقم الطبي</th><th>التليفون</th><th>المعاملة</th><th>الحالة</th><th></th></tr></thead>
+      <tbody>${vs.map((v) => `<tr class="cls-${v.status}"><td class="num"><b class="qn">${v.queueNo}</b></td><td><strong>${esc(v.patientName)}</strong>${v.notes ? `<div class="by-line">${esc(v.notes)}</div>` : ""}</td>
+        <td class="ltr">${esc(v.medicalId || "")}</td><td class="ltr">${esc(v.phone || "")}</td><td>${esc(v.finance || "")}</td>
+        <td><span class="st st-cl-${v.status}">${CL_STATUS[v.status]}</span>${v.arrivedAt && v.status !== "booked" ? `<div class="by-line">حضر ${fmtTime(v.arrivedAt)}</div>` : ""}${v.seenAt ? `<div class="by-line">اتكشف ${fmtTime(v.seenAt)}</div>` : ""}</td>
+        <td class="nowrap">${v.status === "booked" ? act(v, "arrived", "حضر", "") + act(v, "noshow", "محضرش") + act(v, "cancelled", "إلغاء") :
+          v.status === "arrived" ? act(v, "seen", "اتكشف", "") + act(v, "booked", "رجوع") : ["seen", "noshow", "cancelled"].includes(v.status) ? act(v, v.status === "seen" ? "arrived" : "booked", "رجوع") : ""}</td></tr>`).join("")}</tbody></table></div>`
+      : `<div class="empty">${x?.off ? "الدكتور معتذر اليوم ده." : "مفيش حجوزات لسه."}</div>`}`;
+  document.getElementById("csBook")?.addEventListener("click", () => pickPatient("حجز في العيادة", (p) => clBookDialog(p, { date, roomId, slotId })));
+  document.getElementById("csExc")?.addEventListener("click", () => clEditException(date, roomId, slotId, x));
+  document.getElementById("csPrint").onclick = () => printDoc(`كشف ${x?.consultant || ""}`, `<h1>كشف العيادة: ${esc(x?.consultant || "")}</h1>
+    <p class="sub">${DAY_NAME[clDow(date)]} ${fmtDate(date + "T00:00:00")}، ${esc(r?.name || "")}، ${esc(s?.name || "")} (${s?.from || ""} - ${s?.to || ""})، ${esc(x?.specialty || "")}</p>
+    <table><thead><tr><th>الدور</th><th>المريض</th><th>الرقم الطبي</th><th>التليفون</th><th>الحالة</th></tr></thead>
+    <tbody>${vs.filter((v) => v.status !== "cancelled").map((v) => `<tr><td>${v.queueNo}</td><td>${esc(v.patientName)}</td><td class="ltr">${esc(v.medicalId || "")}</td><td class="ltr">${esc(v.phone || "")}</td><td>${CL_STATUS[v.status]}</td></tr>`).join("")}</tbody></table>`, true);
+  body.querySelectorAll("[data-vst]").forEach((b) => (b.onclick = async () => {
+    const v = vs.find((z) => z.id === b.dataset.id), st = b.dataset.vst;
+    const upd = { status: st, ...upMeta() };
+    if (st === "arrived" && v.status === "booked") Object.assign(upd, { arrivedAt: Timestamp.now(), arrivedByName: S.profile.displayName });
+    if (st === "seen") Object.assign(upd, { seenAt: Timestamp.now(), seenByName: S.profile.displayName });
+    if (st === "booked") Object.assign(upd, { arrivedAt: null, seenAt: null });
+    if (st === "arrived" && v.status === "seen") upd.seenAt = null;
+    if (st === "cancelled" && !confirm(`إلغاء حجز ${v.patientName}؟`)) return;
+    try { await updateDoc(doc(db, "clinicVisits", v.id), upd); } catch (e) { toast(errText(e), true); }
+  }));
+}
+
+function clEditException(date, roomId, slotId, x) {
+  const id = clKey(date, roomId, slotId), cur = S.CL.excs.find((e) => e.id === id);
+  formDialog(`استثناء يوم ${fmtDate(date + "T00:00:00")}`, `
+    <fieldset class="seg"><label><input type="radio" name="t" value="off" ${cur?.type === "off" || !cur ? "checked" : ""}> الدكتور معتذر</label>
+      <label><input type="radio" name="t" value="sub" ${cur?.type === "sub" ? "checked" : ""}> دكتور بديل / عيادة إضافية</label></fieldset>
+    <label class="field"><span>الاستشاري البديل</span><input name="cons" list="dlClCons2" value="${esc(cur?.consultant || "")}" autocomplete="off">
+      <datalist id="dlClCons2">${(S.settings.consultants || []).map((c) => `<option value="${esc(c)}">`).join("")}</datalist></label>
+    <label class="field"><span>التخصص</span><select name="spec">${optionsHtml(S.settings.specialties || [], cur?.specialty || x?.specialty || "")}</select></label>
+    <label class="field"><span>ملاحظة</span><input name="note" value="${esc(cur?.note || "")}"></label>`, "حفظ", async (f) => {
+    const t = f.elements.t.value;
+    if (t === "sub" && !f.elements.cons.value.trim()) return "اكتب اسم الاستشاري البديل.";
+    await setDoc(doc(db, "clinicExceptions", id), { date, roomId, slotId, type: t, consultant: t === "sub" ? f.elements.cons.value.trim() : "",
+      specialty: f.elements.spec.value, note: f.elements.note.value.trim(), byName: S.profile.displayName, at: Timestamp.now() });
+    toast("تم الحفظ");
+  }, cur ? async () => { await deleteDoc(doc(db, "clinicExceptions", id)); toast("رجعت العيادة لجدولها العادي"); } : undefined);
+}
+
+// ---------- الحجز ----------
+async function clBookDialog(p, preset = {}) {
+  const C = S.CL || {};
+  let date = preset.date || C.date || isoDay(new Date());
+  let excs = date === C.date ? C.excs : [];
+  const loadDay = async (d) => {
+    excs = (await getDocs(query(collection(db, "clinicExceptions"), where("date", "==", d)))).docs.map((x) => ({ id: x.id, ...x.data() }));
+    const vis = (await getDocs(query(collection(db, "clinicVisits"), where("date", "==", d)))).docs.map((x) => x.data()).filter((v) => v.status !== "cancelled");
+    const out = [];
+    clRooms().forEach((r) => clSlots().forEach((s) => {
+      const x = clSession(d, r.id, s.id, excs); if (!x || x.off) return;
+      const n = vis.filter((v) => v.roomId === r.id && v.slotId === s.id).length;
+      out.push({ r, s, x, n, full: x.cap && n >= x.cap, mine: vis.some((v) => v.roomId === r.id && v.slotId === s.id && v.patientId === p.id) });
+    }));
+    return out;
+  };
+  openDialog(`<form class="form" id="clbF" novalidate><header class="dlg-head"><h3>حجز: ${esc(p.name)}</h3><p class="ltr">${esc(p.medicalId || "")}</p></header>
+    <label class="field"><span>اليوم</span><input type="date" name="d" value="${date}" min="${isoDay(new Date())}"></label>
+    <label class="field"><span>التخصص</span><select name="sp"><option value="">كل التخصصات</option></select></label>
+    <div class="field"><span>العيادة</span><div id="clbList" class="cl-pick"><p class="muted">جاري التحميل…</p></div></div>
+    <div class="row2"><label class="field"><span>المعاملة المالية</span><select name="fin">${optionsHtml(listOf("financeTypes"), "")}</select></label>
+      <label class="field"><span>التليفون</span><input name="ph" class="ltr" value="${esc(p.phone || "")}"></label></div>
+    <label class="field"><span>ملاحظات</span><input name="notes"></label>
+    <div class="err" id="clbErr"></div>
+    <div class="actions"><button class="btn">تأكيد الحجز</button><button type="button" class="btn ghost" data-close>إلغاء</button></div></form>`);
+  const f = document.getElementById("clbF"), list = document.getElementById("clbList"), err = document.getElementById("clbErr");
+  let opts = [];
+  const draw = () => {
+    const sp = f.elements.sp.value;
+    const shown = opts.filter((o) => !sp || o.x.specialty === sp);
+    list.innerHTML = clDow(date) === 5 ? `<p class="muted">الجمعة أجازة.</p>` : shown.length ? shown.map((o) => {
+      const k = `${o.r.id}|${o.s.id}`, pre = preset.roomId === o.r.id && preset.slotId === o.s.id;
+      return `<label class="cl-opt ${o.full ? "full" : ""}"><input type="radio" name="ses" value="${k}" ${pre && !o.full && !o.mine ? "checked" : ""} ${(o.full && !clinicMgr()) || o.mine ? "disabled" : ""}>
+        <span><strong>${esc(o.x.consultant)}</strong> <span class="cl-sp">${esc(o.x.specialty || "")}</span><br><small>${esc(o.s.name)} ${o.s.from}-${o.s.to}، ${esc(o.r.name)}، ${o.n}${o.x.cap ? `/${o.x.cap}` : ""} حجز${o.full ? "، كاملة" : ""}${o.mine ? "، المريض محجوز فيها" : ""}</small></span></label>`;
+    }).join("") : `<p class="muted">مفيش عيادات متاحة في اليوم ده${sp ? " للتخصص ده" : ""}.</p>`;
+  };
+  const reload = async () => {
+    list.innerHTML = `<p class="muted">جاري التحميل…</p>`;
+    try { opts = await loadDay(date); } catch (e) { list.innerHTML = `<div class="err">${esc(errText(e))}</div>`; return; }
+    const specs = [...new Set(opts.map((o) => o.x.specialty).filter(Boolean))];
+    const cur = f.elements.sp.value;
+    f.elements.sp.innerHTML = `<option value="">كل التخصصات</option>` + specs.map((s) => `<option ${s === cur ? "selected" : ""}>${esc(s)}</option>`).join("");
+    draw();
+  };
+  f.elements.d.onchange = () => { if (f.elements.d.value) { date = f.elements.d.value; reload(); } };
+  f.elements.sp.onchange = draw;
+  reload();
+  f.onsubmit = async (ev) => {
+    ev.preventDefault(); err.textContent = "";
+    const sel = f.querySelector('input[name="ses"]:checked');
+    if (!sel) { err.textContent = "اختر العيادة."; return; }
+    const o = opts.find((z) => `${z.r.id}|${z.s.id}` === sel.value);
+    const btn = f.querySelector("button.btn"); btn.disabled = true;
+    try {
+      const key = clKey(date, o.r.id, o.s.id), cRef = doc(db, "clinicCounters", key), vRef = doc(collection(db, "clinicVisits"));
+      let qn = 0;
+      await runTransaction(db, async (tx) => {
+        const cs = await tx.get(cRef);
+        qn = (cs.exists() ? cs.data().n || 0 : 0) + 1;
+        tx.set(cRef, { n: qn, date });
+        tx.set(vRef, { date, dow: clDow(date), roomId: o.r.id, roomName: o.r.name, slotId: o.s.id, slotName: o.s.name, sessionKey: key,
+          consultant: o.x.consultant, specialty: o.x.specialty || "", patientId: p.id, patientName: p.name, medicalId: p.medicalId || "",
+          phone: f.elements.ph.value.trim(), finance: f.elements.fin.value, notes: f.elements.notes.value.trim(), queueNo: qn, status: "booked", ...meta() });
+      });
+      closeDialog();
+      toast(`تم الحجز، رقم الدور ${qn}`);
+      location.hash = `#/out/clinics/s/${date}/${o.r.id}/${o.s.id}`;
+    } catch (e) { err.textContent = errText(e); btn.disabled = false; }
+  };
 }
