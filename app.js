@@ -291,7 +291,7 @@ function route() {
 
   if (page === "" && isAdmin()) {
     renderPortal();
-  } else if (["in", "out", "adm"].includes(page) && !isAdmin()) {
+  } else if (["in", "out", "adm", "set"].includes(page) && !isAdmin()) {
     location.hash = "#/"; return;
   } else if (page === "in") {
     S.page = "home"; renderHome();
@@ -299,6 +299,8 @@ function route() {
     renderOutArea(parts[1] || "");
   } else if (page === "adm") {
     renderAdmArea();
+  } else if (page === "set") {
+    renderSetArea(parts[1] || "");
   } else if ((page === "" || page === "home" || page === "pharmacy") && isPharm()) {
     renderPharmacy();
   } else if (page === "pharmacy" && isAdmin()) {
@@ -377,7 +379,11 @@ function shell(inner) {
   document.body.dataset.area = area;
   const areaNav = area === "portal" ? `<a href="#/" class="on">أقسام المستشفى</a>`
     : area === "out" ? `${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}<a href="#/out" class="${S.page === "out" && !location.hash.split("/")[2] ? "on" : ""}">الرئيسية</a>${OUT_DEPTS.map(([k, l]) => `<a href="#/out/${k}" class="${location.hash === `#/out/${k}` ? "on" : ""}">${l}</a>`).join("")}`
-    : area === "adm" ? `${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}<a href="#/adm" class="on">الرئيسية</a>` : "";
+    : area === "adm" ? `${isAdmin() ? `<a href="#/" class="area-back">أقسام المستشفى</a>` : ""}<a href="#/adm" class="on">الرئيسية</a>`
+    : area === "set" ? (() => { const h = location.hash, grp = S.page === "settings" ? setGroupOf(h.split("/")[2] || "users") : "";
+        return `<a href="#/" class="area-back">أقسام المستشفى</a><a href="#/set" class="${h === "#/set" ? "on" : ""}">الضبط</a>
+        <a href="#/settings/users" class="${grp === "gen" ? "on" : ""}">العامة</a><a href="#/settings/units" class="${grp === "in" ? "on" : ""}">الداخلي</a>
+        <a href="#/set/out" class="${h === "#/set/out" ? "on" : ""}">الخارجي</a><a href="#/set/adm" class="${h === "#/set/adm" ? "on" : ""}">الإداري</a>`; })() : "";
   root.innerHTML = `
   <header class="topbar area-${area}">
     <a class="brand" href="#/">
@@ -398,8 +404,7 @@ function shell(inner) {
       ${canSee("icu") || canSee("ward") ? `<a href="#/handover" class="${S.page === "handover" ? "on" : ""}">تسليم الشيفت</a>` : ""}
       ${isAdmin() || mySpecs().length || canEditAny() ? `<a href="#/consults" class="${S.page === "consults" ? "on" : ""}">الاستشارات${(S.consultIn || []).length ? ` <b class="nb">${S.consultIn.length}</b>` : ""}</a>` : ""}
       ${isAdmin() ? `<a href="#/archive" class="${S.page === "archive" ? "on" : ""}">الأرشيف</a>
-      <a href="#/stats" class="${S.page === "stats" ? "on" : ""}">الإحصائيات</a>
-      <a href="#/settings" class="${S.page === "settings" ? "on" : ""}">الإعدادات</a>` : ""}`}
+      <a href="#/stats" class="${S.page === "stats" ? "on" : ""}">الإحصائيات</a>` : ""}`}
     </nav>
     <div class="me">
       <button class="btn ghost sm ${installPrompt ? "" : "hidden"}" id="installBtn">تثبيت التطبيق</button>
@@ -1831,9 +1836,16 @@ function openEditAdmission(a) {
 /* =========================================================
    الإعدادات (أدمن)
    ========================================================= */
+// تبويبات الضبط: إعدادات عامة (للمستشفى كله) + ضبط إعدادات الداخلي
+const SET_GROUPS = {
+  gen: { name: "الإعدادات العامة", tabs: [["users", "المستخدمين"], ["hospital", "بيانات المستشفى"], ["audit", "سجل التعديلات"], ["backup", "نسخة احتياطية"]] },
+  in: { name: "ضبط إعدادات الداخلي", tabs: [["units", "وحدات الرعاية"], ["wardunits", "أقسام الداخلي"], ["optheaters", "أقسام العمليات"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["clinical", "قوائم التشخيص والتاريخ"], ["deptmap", "الاستشاريين والأقسام"]] },
+};
+const setGroupOf = (tab) => (SET_GROUPS.in.tabs.some(([k]) => k === tab) ? "in" : "gen");
 function renderSettings(tab) {
-  const tabs = [["users", "المستخدمين"], ["units", "وحدات الرعاية"], ["wardunits", "أقسام الداخلي"], ["optheaters", "أقسام العمليات"], ["vitals", "خانات العلامات الحيوية"], ["lists", "القوائم"], ["clinical", "قوائم التشخيص والتاريخ"], ["hospital", "بيانات المستشفى"], ["deptmap", "الاستشاريين والأقسام"], ["audit", "سجل التعديلات"], ["backup", "نسخة احتياطية"]];
-  const nav = `<nav class="tabs">${tabs.map(([k, t]) => `<a href="#/settings/${k}" class="${tab === k ? "on" : ""}">${t}</a>`).join("")}</nav>`;
+  tab = tab || "users";
+  const g = SET_GROUPS[setGroupOf(tab)];
+  const nav = `<div class="toolbar"><h2>${g.name}</h2></div><nav class="tabs">${g.tabs.map(([k, t]) => `<a href="#/settings/${k}" class="${tab === k ? "on" : ""}">${t}</a>`).join("")}</nav>`;
   shell(nav + `<div id="tabBody"><div class="loading">جاري التحميل…</div></div>`);
   const body = document.getElementById("tabBody");
   ({ users: tabUsers, units: tabUnits, wardunits: tabWardUnits, optheaters: tabOpTheaters, vitals: tabVitalFields, lists: tabLists, clinical: tabClinicalLists, hospital: tabHospital, audit: tabAudit, backup: tabBackup, deptmap: tabDeptMap }[tab] || tabUsers)(body);
@@ -6556,9 +6568,10 @@ const AREAS = {
   in: { name: "داخلي المستشفى", desc: "الرعايات المركزة، والداخلي بأقسامه، والعمليات" },
   out: { name: "خارجي المستشفى", desc: "الطوارئ، والمعمل، والأشعة، والعيادات، والكلى الصناعي" },
   adm: { name: "الأقسام الإدارية", desc: "الأقسام الإدارية للمستشفى" },
+  set: { name: "الضبط", desc: "ضبط إعدادات البرنامج: العامة، والداخلي، والخارجي، والإداري" },
 };
 const OUT_DEPTS = [["er", "الطوارئ"], ["lab", "المعمل"], ["rad", "الأشعة"], ["clinics", "العيادات"], ["dialysis", "الكلى الصناعي"]];
-const areaOfPage = (p) => (p === "portal" ? "portal" : String(p || "").startsWith("out") ? "out" : String(p || "").startsWith("adm") ? "adm" : "in");
+const areaOfPage = (p) => (p === "portal" ? "portal" : ["settings", "set"].includes(p) ? "set" : String(p || "").startsWith("out") ? "out" : String(p || "").startsWith("adm") ? "adm" : "in");
 
 function renderPortal() {
   S.page = "portal";
@@ -6587,6 +6600,11 @@ function renderPortal() {
       <p>هتتبني لوحدها، وكل قسم إداري هيبقى ليه صفحته وصلاحياته.</p>
       <div class="pa-chips"><a href="#/adm">فتح</a></div>
     </div>
+    <a class="pa-card pa-set" href="#/set">
+      <div class="pa-top"><h2>${AREAS.set.name}</h2><span class="pa-go">دخول ←</span></div>
+      <p>${AREAS.set.desc}</p>
+      <div class="pa-chips"><span>الإعدادات العامة والمستخدمين</span><span>ضبط الداخلي</span><span>ضبط الخارجي</span><span>ضبط الإداري</span></div>
+    </a>
   </div>`);
 }
 
@@ -6596,6 +6614,24 @@ function renderOutArea(sub) {
   shell(d ? `<div class="soon-box area-out-box"><h2>${d[1]}</h2><p>قسم ${d[1]} تبع ${AREAS.out.name}، ولسه تحت التطوير.</p><p class="muted">هنحدد مع بعض شاشاته وصلاحياته لما نبدأ نبنيه.</p><a class="btn ghost" href="#/out">رجوع لخارجي المستشفى</a></div>`
     : `<div class="toolbar"><h2>${AREAS.out.name}</h2></div>
     <div class="out-grid">${OUT_DEPTS.map(([k, l]) => `<a class="out-tile" href="#/out/${k}"><strong>${l}</strong><span>تحت التطوير</span></a>`).join("")}</div>`);
+}
+function renderSetArea(sub) {
+  S.page = "set";
+  if (sub === "out" || sub === "adm") {
+    const nm = sub === "out" ? AREAS.out.name : AREAS.adm.name;
+    shell(`<div class="toolbar"><h2>ضبط إعدادات ${nm.replace("الأقسام ", "")}</h2></div>
+      <div class="soon-box area-set-box"><h2>ضبط إعدادات ${nm}</h2><p>الإعدادات دي هتظهر هنا لما نبني أقسام ${nm}.</p><a class="btn ghost" href="#/set">رجوع للضبط</a></div>`);
+    return;
+  }
+  const card = (href, title, items, soon) => `<a class="set-card" href="${href}"><div class="pa-top"><h3>${title}</h3>${soon ? `<span class="pa-soon">تحت التطوير</span>` : ""}</div>
+    <div class="pa-chips">${items.map((x) => `<span>${x}</span>`).join("")}</div></a>`;
+  shell(`<div class="toolbar"><h2>الضبط</h2></div>
+    <div class="set-grid">
+      ${card("#/settings/users", "الإعدادات العامة", SET_GROUPS.gen.tabs.map((t) => t[1]))}
+      ${card("#/settings/units", "ضبط إعدادات الداخلي", SET_GROUPS.in.tabs.map((t) => t[1]))}
+      ${card("#/set/out", "ضبط إعدادات الخارجي", OUT_DEPTS.map((t) => t[1]), true)}
+      ${card("#/set/adm", "ضبط إعدادات الإداري", ["الأقسام الإدارية"], true)}
+    </div>`);
 }
 function renderAdmArea() {
   S.page = "adm";
